@@ -1,0 +1,39 @@
+﻿# Sensitive files
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Logs and runtime artifacts
+*.log
+logs/
+outputs/private/
+forward_*.csv
+forward_*.json
+forward_*.jsonl
+data_coverage_report.csv
+asset_inclusion_diagnostics.csv
+
+# Private datasets and outputs
+data/private/
+historic_data/*.csv
+
+# Node/macOS/editor
+node_modules/
+.DS_Store
+.vscode/
+
+# Keep sample dataset for public repo
+!data/example_prices.csv
+
+# Personal records and screenshots
+*.xlsx
+screenshots/*
+!screenshots/.gitkeep
+

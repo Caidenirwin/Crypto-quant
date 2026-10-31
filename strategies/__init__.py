@@ -1,0 +1,4 @@
+"""
+Strategy package namespace.
+"""
+
