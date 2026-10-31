@@ -1,0 +1,9 @@
+{
+  "cycle1": "raised ConnectionError: simulated: data-api.binance.vision unreachable",
+  "cycle2": "ok",
+  "buys": 1,
+  "log_symbols": [
+    "PENDLE/USDT"
+  ],
+  "duplicate": false
+}

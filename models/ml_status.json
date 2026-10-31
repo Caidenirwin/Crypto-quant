@@ -1,9 +1,9 @@
 {
-  "last_research": "2026-10-31T02:12:44.565401+00:00",
+  "last_research": "2026-10-31T13:36:39.158770+00:00",
   "champion": "baseline",
   "promoted_this_run": null,
   "entries_allowed": false,
-  "health_reason": "last 180d: 531 OOS trades, avg -0.702R",
+  "health_reason": "last 180d (since 2026-05-04): 0 OOS trades, avg n/a - paused: needs >= 40 recent trades",
   "news_archive_days": 19,
   "fear_greed_latest": 30.0
 }

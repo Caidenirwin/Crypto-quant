@@ -1,0 +1,249 @@
+symbol,issue,rows,in_ml_training,examples
+AAVE(USD),nonpositive_price,0,0,
+AAVE(USD),broken_ohlc,0,0,
+AAVE(USD),ohlc_all_equal,0,0,
+AAVE(USD),flatline_5d+,0,0,
+AAVE(USD),zero_volume,0,0,
+AAVE(USD),jump_over_60pct,0,0,
+AAVE(USD),date_gap_>1d,0,,
+AAVE(USD),duplicate_dates,0,,
+ARB(USD),nonpositive_price,0,0,
+ARB(USD),broken_ohlc,1,1,2026-04-26
+ARB(USD),ohlc_all_equal,0,0,
+ARB(USD),flatline_5d+,0,0,
+ARB(USD),zero_volume,0,0,
+ARB(USD),jump_over_60pct,0,0,
+ARB(USD),date_gap_>1d,0,,
+ARB(USD),duplicate_dates,0,,
+AVAX(USD),nonpositive_price,0,0,
+AVAX(USD),broken_ohlc,0,0,
+AVAX(USD),ohlc_all_equal,0,0,
+AVAX(USD),flatline_5d+,0,0,
+AVAX(USD),zero_volume,0,0,
+AVAX(USD),jump_over_60pct,1,0,2021-02-10
+AVAX(USD),date_gap_>1d,0,,
+AVAX(USD),duplicate_dates,0,,
+BONK(USD),nonpositive_price,0,0,
+BONK(USD),broken_ohlc,0,0,
+BONK(USD),ohlc_all_equal,0,0,
+BONK(USD),flatline_5d+,0,0,
+BONK(USD),zero_volume,0,0,
+BONK(USD),jump_over_60pct,0,0,
+BONK(USD),date_gap_>1d,0,,
+BONK(USD),duplicate_dates,0,,
+CFG(USD),nonpositive_price,0,0,
+CFG(USD),broken_ohlc,0,0,
+CFG(USD),ohlc_all_equal,0,0,
+CFG(USD),flatline_5d+,0,0,
+CFG(USD),zero_volume,0,0,
+CFG(USD),jump_over_60pct,2,2,"2022-05-27, 2026-02-26"
+CFG(USD),date_gap_>1d,1,,2026-04-23(+2d)
+CFG(USD),duplicate_dates,0,,
+CHAINLINK(USD),nonpositive_price,0,0,
+CHAINLINK(USD),broken_ohlc,0,0,
+CHAINLINK(USD),ohlc_all_equal,0,0,
+CHAINLINK(USD),flatline_5d+,0,0,
+CHAINLINK(USD),zero_volume,0,0,
+CHAINLINK(USD),jump_over_60pct,1,1,2019-06-13
+CHAINLINK(USD),date_gap_>1d,1,,2026-04-23(+2d)
+CHAINLINK(USD),duplicate_dates,0,,
+COMP(CAD),nonpositive_price,328,0,"2019-05-28, 2019-05-30, 2019-05-31"
+COMP(CAD),broken_ohlc,4,0,"2018-12-25, 2020-08-18, 2021-02-02"
+COMP(CAD),ohlc_all_equal,339,0,"2018-12-11, 2018-12-13, 2018-12-30"
+COMP(CAD),flatline_5d+,328,0,"2018-12-08, 2018-12-09, 2018-12-14"
+COMP(CAD),zero_volume,0,0,
+COMP(CAD),jump_over_60pct,98,0,"2019-01-11, 2019-01-12, 2019-01-25"
+COMP(CAD),date_gap_>1d,55,,"2019-01-18(+4d), 2019-04-11(+2d), 2019-05-10(+2d)"
+COMP(CAD),duplicate_dates,0,,
+CPOOL(USD),nonpositive_price,1,0,2021-10-28
+CPOOL(USD),broken_ohlc,0,0,
+CPOOL(USD),ohlc_all_equal,0,0,
+CPOOL(USD),flatline_5d+,0,0,
+CPOOL(USD),zero_volume,0,0,
+CPOOL(USD),jump_over_60pct,3,2,"2022-01-23, 2022-06-08, 2023-11-24"
+CPOOL(USD),date_gap_>1d,1,,2026-04-23(+2d)
+CPOOL(USD),duplicate_dates,0,,
+DOGE(USD),nonpositive_price,0,0,
+DOGE(USD),broken_ohlc,0,0,
+DOGE(USD),ohlc_all_equal,0,0,
+DOGE(USD),flatline_5d+,0,0,
+DOGE(USD),zero_volume,0,0,
+DOGE(USD),jump_over_60pct,3,3,"2021-01-02, 2021-01-28, 2021-04-16"
+DOGE(USD),date_gap_>1d,0,,
+DOGE(USD),duplicate_dates,0,,
+FLOKI(USD),nonpositive_price,0,0,
+FLOKI(USD),broken_ohlc,0,0,
+FLOKI(USD),ohlc_all_equal,0,0,
+FLOKI(USD),flatline_5d+,0,0,
+FLOKI(USD),zero_volume,0,0,
+FLOKI(USD),jump_over_60pct,2,2,"2024-03-01, 2024-03-08"
+FLOKI(USD),date_gap_>1d,0,,
+FLOKI(USD),duplicate_dates,0,,
+HBAR(USD),nonpositive_price,0,0,
+HBAR(USD),broken_ohlc,0,0,
+HBAR(USD),ohlc_all_equal,0,0,
+HBAR(USD),flatline_5d+,0,0,
+HBAR(USD),zero_volume,0,0,
+HBAR(USD),jump_over_60pct,4,2,"2020-02-11, 2020-02-12, 2024-04-23"
+HBAR(USD),date_gap_>1d,0,,
+HBAR(USD),duplicate_dates,0,,
+MKR(EUR),nonpositive_price,0,0,
+MKR(EUR),broken_ohlc,81,0,"2018-02-08, 2018-04-23, 2018-04-24"
+MKR(EUR),ohlc_all_equal,0,0,
+MKR(EUR),flatline_5d+,0,0,
+MKR(EUR),zero_volume,0,0,
+MKR(EUR),jump_over_60pct,0,0,
+MKR(EUR),date_gap_>1d,4,,"2026-09-08(+2d), 2026-09-13(+2d), 2026-10-01(+2d)"
+MKR(EUR),duplicate_dates,0,,
+MPL(USD),nonpositive_price,0,0,
+MPL(USD),broken_ohlc,0,0,
+MPL(USD),ohlc_all_equal,0,0,
+MPL(USD),flatline_5d+,0,0,
+MPL(USD),zero_volume,0,0,
+MPL(USD),jump_over_60pct,1,0,2025-05-06
+MPL(USD),date_gap_>1d,0,,
+MPL(USD),duplicate_dates,0,,
+NEAR(USD),nonpositive_price,0,0,
+NEAR(USD),broken_ohlc,0,0,
+NEAR(USD),ohlc_all_equal,0,0,
+NEAR(USD),flatline_5d+,0,0,
+NEAR(USD),zero_volume,0,0,
+NEAR(USD),jump_over_60pct,0,0,
+NEAR(USD),date_gap_>1d,0,,
+NEAR(USD),duplicate_dates,0,,
+ONDO(USD),nonpositive_price,0,0,
+ONDO(USD),broken_ohlc,0,0,
+ONDO(USD),ohlc_all_equal,0,0,
+ONDO(USD),flatline_5d+,0,0,
+ONDO(USD),zero_volume,0,0,
+ONDO(USD),jump_over_60pct,0,0,
+ONDO(USD),date_gap_>1d,1,,2026-04-23(+2d)
+ONDO(USD),duplicate_dates,0,,
+OP(USD),nonpositive_price,84,0,"2022-05-14, 2022-05-15, 2022-05-17"
+OP(USD),broken_ohlc,1,1,2026-04-26
+OP(USD),ohlc_all_equal,137,0,"2022-03-14, 2022-03-15, 2022-03-16"
+OP(USD),flatline_5d+,131,0,"2022-03-18, 2022-03-19, 2022-03-20"
+OP(USD),zero_volume,0,0,
+OP(USD),jump_over_60pct,2,0,"2022-05-14, 2022-10-06"
+OP(USD),date_gap_>1d,27,,"2022-04-17(+2d), 2022-05-14(+6d), 2022-05-17(+2d)"
+OP(USD),duplicate_dates,0,,
+PENDLE(USD),nonpositive_price,0,0,
+PENDLE(USD),broken_ohlc,1,1,2026-04-23
+PENDLE(USD),ohlc_all_equal,0,0,
+PENDLE(USD),flatline_5d+,0,0,
+PENDLE(USD),zero_volume,0,0,
+PENDLE(USD),jump_over_60pct,4,1,"2021-05-24, 2021-08-19, 2021-10-13"
+PENDLE(USD),date_gap_>1d,4,,"2021-05-03(+2d), 2021-05-07(+3d), 2021-07-04(+2d)"
+PENDLE(USD),duplicate_dates,0,,
+PEPE(USD),nonpositive_price,0,0,
+PEPE(USD),broken_ohlc,0,0,
+PEPE(USD),ohlc_all_equal,0,0,
+PEPE(USD),flatline_5d+,0,0,
+PEPE(USD),zero_volume,0,0,
+PEPE(USD),jump_over_60pct,0,0,
+PEPE(USD),date_gap_>1d,0,,
+PEPE(USD),duplicate_dates,0,,
+POLYX(USD),nonpositive_price,0,0,
+POLYX(USD),broken_ohlc,0,0,
+POLYX(USD),ohlc_all_equal,6,0,"2022-07-22, 2022-07-23, 2022-07-24"
+POLYX(USD),flatline_5d+,3,0,"2022-07-25, 2022-07-26, 2022-07-27"
+POLYX(USD),zero_volume,7,0,"2022-07-21, 2022-07-22, 2022-07-23"
+POLYX(USD),jump_over_60pct,2,2,"2023-04-20, 2024-03-20"
+POLYX(USD),date_gap_>1d,0,,
+POLYX(USD),duplicate_dates,0,,
+PRO(USD),nonpositive_price,0,0,
+PRO(USD),broken_ohlc,0,0,
+PRO(USD),ohlc_all_equal,0,0,
+PRO(USD),flatline_5d+,0,0,
+PRO(USD),zero_volume,0,0,
+PRO(USD),jump_over_60pct,7,5,"2021-01-31, 2021-04-30, 2021-09-08"
+PRO(USD),date_gap_>1d,0,,
+PRO(USD),duplicate_dates,0,,
+RIO(USD),nonpositive_price,7,7,"2021-09-19, 2021-10-02, 2021-10-10"
+RIO(USD),broken_ohlc,0,0,
+RIO(USD),ohlc_all_equal,0,0,
+RIO(USD),flatline_5d+,0,0,
+RIO(USD),zero_volume,0,0,
+RIO(USD),jump_over_60pct,3,3,"2022-10-16, 2023-01-28, 2023-03-08"
+RIO(USD),date_gap_>1d,0,,
+RIO(USD),duplicate_dates,0,,
+SHIB(USD),nonpositive_price,0,0,
+SHIB(USD),broken_ohlc,0,0,
+SHIB(USD),ohlc_all_equal,0,0,
+SHIB(USD),flatline_5d+,0,0,
+SHIB(USD),zero_volume,0,0,
+SHIB(USD),jump_over_60pct,2,0,"2021-10-06, 2021-10-27"
+SHIB(USD),date_gap_>1d,0,,
+SHIB(USD),duplicate_dates,0,,
+SKY(USD),nonpositive_price,0,0,
+SKY(USD),broken_ohlc,0,0,
+SKY(USD),ohlc_all_equal,0,0,
+SKY(USD),flatline_5d+,0,0,
+SKY(USD),zero_volume,0,0,
+SKY(USD),jump_over_60pct,1,0,2026-05-08
+SKY(USD),date_gap_>1d,11,,"2026-04-23(+2d), 2026-05-08(+15d), 2026-05-11(+3d)"
+SKY(USD),duplicate_dates,0,,
+SNX(AUD),nonpositive_price,0,0,
+SNX(AUD),broken_ohlc,68,0,"2018-05-01, 2018-05-25, 2018-06-22"
+SNX(AUD),ohlc_all_equal,0,0,
+SNX(AUD),flatline_5d+,0,0,
+SNX(AUD),zero_volume,0,0,
+SNX(AUD),jump_over_60pct,2,0,"2018-10-11, 2025-10-12"
+SNX(AUD),date_gap_>1d,0,,
+SNX(AUD),duplicate_dates,0,,
+SOL(USD),nonpositive_price,0,0,
+SOL(USD),broken_ohlc,0,0,
+SOL(USD),ohlc_all_equal,0,0,
+SOL(USD),flatline_5d+,0,0,
+SOL(USD),zero_volume,0,0,
+SOL(USD),jump_over_60pct,0,0,
+SOL(USD),date_gap_>1d,0,,
+SOL(USD),duplicate_dates,0,,
+SUI(USD),nonpositive_price,0,0,
+SUI(USD),broken_ohlc,0,0,
+SUI(USD),ohlc_all_equal,0,0,
+SUI(USD),flatline_5d+,0,0,
+SUI(USD),zero_volume,0,0,
+SUI(USD),jump_over_60pct,0,0,
+SUI(USD),date_gap_>1d,0,,
+SUI(USD),duplicate_dates,0,,
+UNI(USD),nonpositive_price,0,0,
+UNI(USD),broken_ohlc,0,0,
+UNI(USD),ohlc_all_equal,0,0,
+UNI(USD),flatline_5d+,0,0,
+UNI(USD),zero_volume,0,0,
+UNI(USD),jump_over_60pct,0,0,
+UNI(USD),date_gap_>1d,0,,
+UNI(USD),duplicate_dates,0,,
+VET(EUR),nonpositive_price,0,0,
+VET(EUR),broken_ohlc,50,0,"2018-08-21, 2018-08-27, 2018-09-25"
+VET(EUR),ohlc_all_equal,0,0,
+VET(EUR),flatline_5d+,0,0,
+VET(EUR),zero_volume,0,0,
+VET(EUR),jump_over_60pct,0,0,
+VET(EUR),date_gap_>1d,0,,
+VET(EUR),duplicate_dates,0,,
+WIF(USD),nonpositive_price,0,0,
+WIF(USD),broken_ohlc,0,0,
+WIF(USD),ohlc_all_equal,0,0,
+WIF(USD),flatline_5d+,0,0,
+WIF(USD),zero_volume,0,0,
+WIF(USD),jump_over_60pct,0,0,
+WIF(USD),date_gap_>1d,0,,
+WIF(USD),duplicate_dates,0,,
+XRP,nonpositive_price,0,0,
+XRP,broken_ohlc,0,0,
+XRP,ohlc_all_equal,0,0,
+XRP,flatline_5d+,0,0,
+XRP,zero_volume,0,0,
+XRP,jump_over_60pct,2,1,"2017-12-14, 2023-07-13"
+XRP,date_gap_>1d,1,,2026-04-20(+2d)
+XRP,duplicate_dates,0,,
+ZBCN(USD),nonpositive_price,0,0,
+ZBCN(USD),broken_ohlc,0,0,
+ZBCN(USD),ohlc_all_equal,0,0,
+ZBCN(USD),flatline_5d+,0,0,
+ZBCN(USD),zero_volume,0,0,
+ZBCN(USD),jump_over_60pct,1,0,2024-04-11
+ZBCN(USD),date_gap_>1d,1,,2024-04-15(+2d)
+ZBCN(USD),duplicate_dates,0,,

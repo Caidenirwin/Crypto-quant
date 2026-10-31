@@ -1,0 +1,5 @@
+symbol,bad_rows,training_rows,train_rows_with_bad_bar_in_200d_window,train_rows_with_bad_bar_in_365d_window,tradable
+CPOOL(USD),1,1614,0,165,False
+OP(USD),139,1411,138,303,True
+POLYX(USD),6,1401,58,223,False
+RIO(USD),7,1915,249,414,False

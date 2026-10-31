@@ -23,5 +23,22 @@ $settings = New-ScheduledTaskSettingsSet `
 
 Register-ScheduledTask -TaskName "CryptoQuantAutopilot" -Action $action -Trigger $trigger -Settings $settings `
     -Description "Crypto quant paper trader (Binance Testnet): data refresh + hourly live_runner." -Force | Out-Null
-Start-ScheduledTask -TaskName "CryptoQuantAutopilot"
-Write-Host "CryptoQuantAutopilot installed and started. Log: logs\autopilot.log" -ForegroundColor Green
+# Start it and CONFIRM it started: right after a stop, the scheduler can still think the old
+# instance is running and silently ignore the start (MultipleInstances IgnoreNew). Retry if so.
+$log = Join-Path $projectRoot "logs\autopilot.log"
+$before = if (Test-Path $log) { (Get-Content $log | Select-String "Autopilot started").Count } else { 0 }
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    Start-ScheduledTask -TaskName "CryptoQuantAutopilot"
+    for ($i = 0; $i -lt 20; $i++) {
+        Start-Sleep -Seconds 1
+        $now = if (Test-Path $log) { (Get-Content $log | Select-String "Autopilot started").Count } else { 0 }
+        if ($now -gt $before) {
+            Write-Host "CryptoQuantAutopilot installed and CONFIRMED running. Log: logs\autopilot.log" -ForegroundColor Green
+            exit 0
+        }
+    }
+    Write-Host "Autopilot did not start yet (attempt $attempt) - retrying..." -ForegroundColor Yellow
+    Stop-ScheduledTask -TaskName "CryptoQuantAutopilot" -ErrorAction SilentlyContinue
+}
+Write-Host "WARNING: autopilot could not be confirmed running. Check logs\autopilot.log." -ForegroundColor Red
+exit 1

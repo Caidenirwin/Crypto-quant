@@ -1,1112 +1,1067 @@
-﻿from __future__ import annotations
+﻿"""
+Crypto Quant Command Center (Streamlit).  Run: streamlit run dashboard.py
+
+Mostly read-only: it reads the bot's logs and pulls live prices / news from the
+same public sources the bot uses (Binance public market data, alternative.me,
+crypto news RSS). The ONE action is the "Run bot now" button, which launches
+run_bot_now.ps1 (one Testnet paper-trading cycle) in the background after a
+confirmation; its output goes to logs/manual_runs/.
+
+Tabs: Overview | Live Prices | V7 Portfolio | ML Sleeve | News | Safety
+"""
+
+from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import re
+import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
-try:
-    from streamlit_autorefresh import st_autorefresh  # type: ignore
-except Exception:
-    st_autorefresh = None
 
-st.set_page_config(
-    page_title="Crypto Quant Command Center",
-    page_icon="C",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="Crypto Quant", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 
-# ----------------------------
-# Paths (read-only)
-# ----------------------------
-LOG_DIR = Path("logs")
-PATHS = {
-    "trades": LOG_DIR / "live_trades.csv",
-    "equity": LOG_DIR / "paper_equity.csv",
-    "equity_legacy": Path("forward_equity.csv"),
-    "tax": LOG_DIR / "tax_reserve.csv",
-    "positions_snapshot": LOG_DIR / "positions_snapshot.csv",
-    "audit": Path("forward_audit.json"),
-    "signals": Path("forward_signal_trace.csv"),
-}
-DISPLAY_TZ = ZoneInfo("America/New_York")
-DISPLAY_TZ_LABEL = "ET"
-FORWARD_SIGNAL_LOOKBACK_DAYS = 14
-LONG_TERM_CORE_BASES = ("XRP", "HBAR", "ONDO")
+ROOT = Path(__file__).resolve().parent
+LOGS = ROOT / "logs"
+ML_LOGS = LOGS / "ml"
+MIRROR = "https://data-api.binance.vision/api/v3"
+TZ = ZoneInfo("America/New_York")
+V7_START = 500.0
+ML_START = 500.0
 
-# Starting capital — used as the baseline for all return % calculations.
-STARTING_CAPITAL = 500.0
-LIVE_START_DATE = "2026-04-26"
+# Watchlist: everything the bot trades or watches, plus BTC/ETH as market context.
+WATCHLIST = [
+    "BTC", "ETH", "XRP", "HBAR", "ONDO", "SOL", "AVAX", "LINK", "NEAR", "SUI", "AAVE",
+    "UNI", "ARB", "OP", "PENDLE", "DOGE", "SHIB", "PEPE", "BONK", "WIF", "FLOKI",
+]
+MEMES = {"DOGE", "SHIB", "PEPE", "BONK", "WIF", "FLOKI"}
+# Binance kline intervals offered on the candle chart.
+TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"]
+MANUAL_DIR = LOGS / "manual_runs"
+MANUAL_STATE = MANUAL_DIR / "current.json"
 
-# V7 strategy description (display only)
-STRATEGY_INFO = {
-    "name": "V7 HighBeta + ONDO Sector Rotation",
-    "sectors": "HighBeta (XRP + HBAR) | ONDO",
-    "signal": "Sharpe14 > 0.1 gate (else cash)",
-    "rebalance": "Every 2 days",
-    "backtest_cagr": "+34.3%",
-    "backtest_sharpe": "1.30",
-    "backtest_maxdd": "-20.0%",
-    "backtest_period": "Jan 2024 – Jun 2026 (2.43 yrs)",
-}
-
-# Display-only risk constants — kept in sync with LiveSafetyConfig in live_runner.py.
-RISK_DISPLAY = {
-    "Max Order Size (USD)": 60.0,
-    "Max Position Size (USD)": 180.0,
-    "Max Exposure %": 95.0,
-    "Daily DD Stop %": 12.0,
-    "Total DD Stop %": 30.0,
+# ---- Palette (dataviz reference instance, dark mode) -------------------------
+C = {
+    "page": "#0d0d0d", "surface": "#1a1a19", "ink": "#f0efec", "ink2": "#c3c2b7", "muted": "#898781",
+    "grid": "#2c2c2a", "axis": "#383835", "border": "rgba(255,255,255,0.10)",
+    "s1": "#3987e5", "s2": "#d95926", "s3": "#199e70",          # categorical slots 1-3
+    "up": "#3987e5", "down": "#e66767",                          # diverging pair (price polarity)
+    "good": "#0ca30c", "warning": "#fab219", "serious": "#ec835a", "critical": "#d03b3b",
 }
 
 
 def inject_css() -> None:
     st.markdown(
-        """
+        f"""
 <style>
-:root {
-  --bg: #080808;
-  --card: #111111;
-  --card2: #151515;
-  --text: #f2f2f2;
-  --muted: #9a9a9a;
-  --border: #2a2a2a;
-  --green: #00c076;
-  --red: #e03d3d;
-  --white: #ffffff;
-}
-html, body, [class*="css"] {
-  font-family: Consolas, 'Courier New', monospace !important;
-  font-variant-numeric: tabular-nums;
-}
-.stApp { background: var(--bg); color: var(--text); }
-[data-testid="stSidebar"] > div:first-child {
-  background: var(--bg);
-  border-right: 1px solid var(--border);
-}
-[data-testid="stSidebar"] * { color: var(--text) !important; }
-.block-container { max-width: 96% !important; padding-top: 0.8rem !important; }
-[data-testid="stHeader"] { background: transparent; }
-.hdr {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  margin-bottom: 14px;
-}
-.hdr-title {
-  letter-spacing: .14em;
-  text-transform: uppercase;
-  color: var(--white);
-  font-size: 18px;
-}
-.hdr-sub { color: var(--muted); font-size: 12px; margin-top: 6px; }
-.badge {
-  display: inline-block;
-  border: 1px solid var(--border);
-  background: var(--card2);
-  color: var(--text);
-  border-radius: 999px;
-  padding: 3px 9px;
-  font-size: 10px;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  margin-right: 6px;
-}
-.badge-green { color: var(--green); border-color: rgba(0,192,118,.45); background: rgba(0,192,118,.08); }
-.badge-red { color: var(--red); border-color: rgba(224,61,61,.45); background: rgba(224,61,61,.08); }
-.section-title {
-  letter-spacing: .14em;
-  text-transform: uppercase;
-  color: var(--text);
-  font-size: 13px;
-  margin: 18px 0 8px;
-}
-.metric-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(150px, 1fr));
-  gap: 10px;
-  margin-bottom: 10px;
-}
-.metric-card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px;
-}
-.metric-label {
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .1em;
-  font-size: 10px;
-}
-.metric-value {
-  color: var(--white);
-  font-size: 22px;
-  margin-top: 6px;
-}
-.val-pos { color: var(--green); }
-.val-neg { color: var(--red); }
-.box {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  margin: 6px 0;
-}
-.warn { border-left: 3px solid #c8a13f; color: #e7c872; }
-.info { border-left: 3px solid #555; color: var(--muted); }
-</style>
-        """,
+.stApp {{ background: {C['page']}; color: {C['ink']}; }}
+html, body, [class*="css"] {{ font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }}
+.block-container {{ padding-top: 1.2rem; max-width: 1500px; }}
+[data-testid="stHeader"] {{ background: transparent; }}
+.hdr {{ display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;
+        background:{C['surface']}; border:1px solid {C['border']}; border-radius:12px; padding:14px 18px; margin-bottom:12px; }}
+.hdr-title {{ font-size:20px; font-weight:600; color:{C['ink']}; }}
+.hdr-sub {{ font-size:12px; color:{C['muted']}; margin-top:4px; }}
+.pill {{ display:inline-block; font-size:11px; padding:3px 10px; border-radius:999px; margin-left:6px;
+         border:1px solid {C['border']}; color:{C['ink2']}; background:#222220; }}
+.tiles {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:10px; margin:6px 0 14px; }}
+.tile {{ background:{C['surface']}; border:1px solid {C['border']}; border-radius:10px; padding:12px 14px; }}
+.tile-label {{ font-size:11px; color:{C['muted']}; text-transform:uppercase; letter-spacing:.06em; }}
+.tile-value {{ font-size:24px; font-weight:600; color:{C['ink']}; margin-top:4px; }}
+.tile-sub {{ font-size:12px; color:{C['ink2']}; margin-top:2px; }}
+.up {{ color:{C['good']}; }} .down {{ color:{C['critical']}; }}
+.ticker {{ display:flex; gap:18px; overflow-x:auto; white-space:nowrap; padding:8px 12px; margin-bottom:12px;
+           background:{C['surface']}; border:1px solid {C['border']}; border-radius:10px; font-size:13px; }}
+.ticker b {{ color:{C['ink']}; }} .ticker span.px {{ color:{C['ink2']}; font-variant-numeric: tabular-nums; }}
+.news {{ background:{C['surface']}; border:1px solid {C['border']}; border-radius:10px; padding:10px 14px; margin:6px 0; }}
+.news a {{ color:{C['ink']}; text-decoration:none; font-weight:500; }}
+.news .meta {{ font-size:11px; color:{C['muted']}; margin-top:3px; }}
+.tag {{ display:inline-block; font-size:10px; padding:1px 7px; border-radius:6px; margin-right:4px;
+        border:1px solid {C['border']}; color:{C['ink2']}; }}
+.status {{ display:inline-block; font-size:12px; padding:3px 10px; border-radius:6px; font-weight:600; }}
+.st-good {{ color:{C['good']}; border:1px solid {C['good']}; }}
+.st-warn {{ color:{C['warning']}; border:1px solid {C['warning']}; }}
+.st-crit {{ color:{C['critical']}; border:1px solid {C['critical']}; }}
+.note {{ font-size:12px; color:{C['muted']}; }}
+</style>""",
         unsafe_allow_html=True,
     )
 
 
-def warn(msg: str) -> None:
-    st.markdown(f'<div class="box warn">{msg}</div>', unsafe_allow_html=True)
+# --------------------------------------------------------------------------- #
+# Formatting helpers                                                          #
+# --------------------------------------------------------------------------- #
+def money(v: Optional[float], dp: int = 2) -> str:
+    if v is None or pd.isna(v):
+        return "—"
+    return f"-${abs(v):,.{dp}f}" if v < 0 else f"${v:,.{dp}f}"
 
 
-def info(msg: str) -> None:
-    st.markdown(f'<div class="box info">{msg}</div>', unsafe_allow_html=True)
+def price_fmt(v: Optional[float]) -> str:
+    if v is None or pd.isna(v):
+        return "—"
+    if v >= 1000:
+        return f"${v:,.2f}"
+    if v >= 1:
+        return f"${v:,.4f}"
+    return f"${v:.8f}".rstrip("0")
 
 
-def load_csv(path: Path) -> Tuple[pd.DataFrame | None, str | None]:
-    if not path.exists():
-        return None, f"Missing file: {path}"
+def delta_html(pct: Optional[float], dp: int = 2) -> str:
+    """Gain/loss text: color + arrow, never color alone."""
+    if pct is None or pd.isna(pct):
+        return '<span class="note">—</span>'
+    cls, arrow = ("up", "▲") if pct >= 0 else ("down", "▼")
+    return f'<span class="{cls}">{arrow} {pct:+.{dp}f}%</span>'
+
+
+def tile(label: str, value: str, sub: str = "") -> str:
+    return (f'<div class="tile"><div class="tile-label">{label}</div>'
+            f'<div class="tile-value">{value}</div><div class="tile-sub">{sub}</div></div>')
+
+
+def status_badge(level: str, text: str) -> str:
+    icon = {"good": "✔", "warn": "⚠", "crit": "✖"}[level]
+    return f'<span class="status st-{level}">{icon} {text}</span>'
+
+
+def et(ts) -> str:
+    try:
+        return pd.Timestamp(ts).tz_convert(TZ).strftime("%b %d %H:%M ET")
+    except Exception:
+        return "—"
+
+
+def style_fig(fig: go.Figure, height: int = 320, title: str = "") -> go.Figure:
+    fig.update_layout(
+        height=height, title=dict(text=title, font=dict(size=13, color=C["ink2"]), x=0, xanchor="left"),
+        paper_bgcolor=C["surface"], plot_bgcolor=C["surface"], font=dict(color=C["ink2"], size=12),
+        margin=dict(l=50, r=20, t=40 if title else 16, b=30), hovermode="x unified",
+        legend=dict(orientation="h", y=1.08, x=1, xanchor="right", bgcolor="rgba(0,0,0,0)"),
+        hoverlabel=dict(bgcolor="#222220", bordercolor=C["axis"], font=dict(color=C["ink"])),
+    )
+    fig.update_xaxes(gridcolor=C["grid"], linecolor=C["axis"], zeroline=False, showspikes=True,
+                     spikecolor=C["muted"], spikethickness=1, spikedash="solid", spikemode="across")
+    fig.update_yaxes(gridcolor=C["grid"], linecolor=C["axis"], zeroline=False)
+    return fig
+
+
+def show_chart(fig: go.Figure, key: str) -> None:
+    st.plotly_chart(fig, width="stretch", key=key, config={"displaylogo": False, "scrollZoom": True})
+
+
+# --------------------------------------------------------------------------- #
+# Data loaders (read-only)                                                    #
+# --------------------------------------------------------------------------- #
+def read_csv(path: Path) -> pd.DataFrame:
     try:
         df = pd.read_csv(path)
-    except Exception as exc:
-        return None, f"Malformed CSV {path}: {exc}"
-    if df.empty:
-        return df, f"Empty file: {path}"
-    return df, None
+    except Exception:
+        return pd.DataFrame()
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+        df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+    return df
 
 
-def load_json(path: Path) -> Tuple[dict | None, str | None]:
-    if not path.exists():
-        return None, f"Missing file: {path}"
+def read_json(path: Path) -> dict:
     try:
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f), None
-    except Exception as exc:
-        return None, f"Malformed JSON {path}: {exc}"
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
-def to_ts(series: pd.Series) -> pd.Series:
-    return pd.to_datetime(series, errors="coerce", utc=True)
+@st.cache_data(ttl=15, show_spinner=False)
+def live_tickers(bases: tuple) -> pd.DataFrame:
+    syms = json.dumps([f"{b}USDT" for b in bases], separators=(",", ":"))
+    r = requests.get(f"{MIRROR}/ticker/24hr", params={"symbols": syms}, timeout=15)
+    r.raise_for_status()
+    rows = []
+    for t in r.json():
+        rows.append({
+            "Coin": t["symbol"][:-4], "Price": float(t["lastPrice"]),
+            "24h %": float(t["priceChangePercent"]), "24h High": float(t["highPrice"]),
+            "24h Low": float(t["lowPrice"]), "24h Volume ($)": float(t["quoteVolume"]),
+        })
+    df = pd.DataFrame(rows)
+    df["order"] = df["Coin"].map({b: i for i, b in enumerate(bases)})
+    return df.sort_values("order").drop(columns="order").reset_index(drop=True)
 
 
-def to_display_ts(series: pd.Series) -> pd.Series:
-    return to_ts(series).dt.tz_convert(DISPLAY_TZ)
+@st.cache_data(ttl=10, show_spinner=False)
+def klines(base: str, interval: str, limit: int = 200) -> pd.DataFrame:
+    r = requests.get(f"{MIRROR}/klines", params={"symbol": f"{base}USDT", "interval": interval, "limit": limit},
+                     timeout=15)
+    r.raise_for_status()
+    df = pd.DataFrame(r.json()).iloc[:, :6]
+    df.columns = ["t", "Open", "High", "Low", "Close", "Volume"]
+    df["t"] = pd.to_datetime(df["t"], unit="ms", utc=True).dt.tz_convert(TZ)
+    return df.astype({c: float for c in ["Open", "High", "Low", "Close", "Volume"]})
 
 
-def fmt_money(v: float | None) -> str:
-    if v is None or pd.isna(v):
-        return "N/A"
-    return f"${v:,.2f}"
+@st.cache_data(ttl=300, show_spinner=False)
+def headlines() -> List[dict]:
+    from news_feed import fetch_headlines   # read-only fetch; the bot does the archiving
+    return fetch_headlines()
 
 
-def fmt_pct(v: float | None) -> str:
-    if v is None or pd.isna(v):
-        return "N/A"
-    return f"{v:.2f}%"
+@st.cache_data(ttl=600, show_spinner=False)
+def fear_greed(days: int = 365) -> pd.DataFrame:
+    try:
+        r = requests.get("https://api.alternative.me/fng/", params={"limit": days, "format": "json"}, timeout=15)
+        r.raise_for_status()
+        rows = [{"date": pd.Timestamp(int(x["timestamp"]), unit="s"), "fng": float(x["value"]),
+                 "label": x["value_classification"]} for x in r.json()["data"]]
+        return pd.DataFrame(rows).sort_values("date")
+    except Exception:
+        from news_feed import load_fear_greed
+        df = load_fear_greed().reset_index().tail(days)
+        df["label"] = ""
+        return df
 
 
-def drawdown_pct(equity: pd.Series) -> pd.Series:
-    peak = equity.cummax()
-    return (equity / peak - 1.0) * 100.0
+def live_price_map(bases) -> Dict[str, float]:
+    try:
+        t = live_tickers(tuple(dict.fromkeys(bases)))
+        return dict(zip(t["Coin"], t["Price"]))
+    except Exception:
+        return {}
 
 
-def prepare_equity_history(df: pd.DataFrame, eq_col: str, ts_col: str) -> pd.DataFrame:
-    """
-    Normalize equity history for accurate charting/metrics:
-    - parse timestamps in UTC then convert to display tz
-    - parse equity values as numeric
-    - drop invalid rows
-    - sort chronologically
-    - keep the latest record per timestamp
-    """
-    out = df.copy()
-    out[ts_col] = to_display_ts(out[ts_col])
-    out[eq_col] = pd.to_numeric(out[eq_col], errors="coerce")
-    out = out.dropna(subset=[ts_col, eq_col]).sort_values(ts_col)
-    out = out.drop_duplicates(subset=[ts_col], keep="last")
+def bot_status() -> dict:
+    """Autopilot health from its own log + lock file."""
+    out = {"running": False, "last_activity": None, "next_run": None, "safety_stop": False,
+           "emergency_flag": (LOGS / "emergency_stop.flag").exists()}
+    log = LOGS / "autopilot.log"
+    if log.exists():
+        out["last_activity"] = datetime.fromtimestamp(log.stat().st_mtime, tz=timezone.utc)
+        try:
+            tail = log.read_text(encoding="utf-8", errors="ignore").splitlines()[-400:]
+        except Exception:
+            tail = []
+        for line in reversed(tail):
+            m = re.search(r"until next run at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ET", line)
+            if m:
+                out["next_run"] = m.group(1)
+                break
+        out["safety_stop"] = any("SAFETY STOP" in l for l in tail[-20:])
+        fresh = datetime.now(timezone.utc) - out["last_activity"] < timedelta(minutes=75)
+        out["running"] = (LOGS / "autopilot.lock").exists() and fresh and not out["emergency_flag"]
     return out
 
 
-def merge_equity_history(
-    primary_df: pd.DataFrame | None,
-    legacy_df: pd.DataFrame | None,
-) -> pd.DataFrame | None:
-    """
-    Merge current paper equity with legacy forward equity so chart history remains continuous.
-    """
-    frames: List[pd.DataFrame] = []
-    if primary_df is not None and not primary_df.empty:
-        frames.append(primary_df.copy())
-    if legacy_df is not None and not legacy_df.empty:
-        frames.append(legacy_df.copy())
-    if not frames:
+# --------------------------------------------------------------------------- #
+# "Run bot now" button (the dashboard's only action)                          #
+# --------------------------------------------------------------------------- #
+def _pid_alive(pid: int) -> bool:
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {int(pid)}", "/NH"], capture_output=True,
+                             text=True, timeout=10).stdout
+        return str(int(pid)) in out
+    except Exception:
+        return False
+
+
+def manual_run_status() -> Optional[dict]:
+    s = read_json(MANUAL_STATE)
+    if not s:
         return None
-
-    merged = pd.concat(frames, ignore_index=True, sort=False)
-    ts_col = "timestamp" if "timestamp" in merged.columns else None
-    if ts_col is None:
-        ts_col = next((c for c in merged.columns if "time" in c.lower() or "date" in c.lower()), None)
-    eq_col = "total_equity" if "total_equity" in merged.columns else None
-    if eq_col is None:
-        eq_col = next((c for c in merged.columns if "equity" in c.lower()), None)
-    if ts_col is None or eq_col is None:
-        return merged
-
-    merged[ts_col] = to_ts(merged[ts_col])
-    merged[eq_col] = pd.to_numeric(merged[eq_col], errors="coerce")
-    merged = merged.dropna(subset=[ts_col, eq_col]).sort_values(ts_col)
-    merged = merged.drop_duplicates(subset=[ts_col], keep="last")
-    return merged
-
-
-def metric_card(label: str, value: str, sign: str = "") -> str:
-    cls = "val-pos" if sign == "pos" else ("val-neg" if sign == "neg" else "")
-    return (
-        '<div class="metric-card">'
-        f'<div class="metric-label">{label}</div>'
-        f'<div class="metric-value {cls}">{value}</div>'
-        "</div>"
-    )
+    log = Path(s["log"])
+    text = log.read_text(encoding="utf-8", errors="ignore") if log.exists() else ""
+    started = pd.Timestamp(s["started"])
+    # Guard against Windows reusing the PID long after our run ended.
+    running = _pid_alive(s["pid"]) and pd.Timestamp.now(tz="UTC") - started < pd.Timedelta(minutes=30)
+    if "Cycle finished" in text:
+        outcome = ("good", "Finished OK")
+    elif "SAFETY STOP" in text:
+        outcome = ("crit", "SAFETY STOP - review before trading again")
+    elif "Emergency stop is ON" in text:
+        outcome = ("crit", "Refused: emergency stop is on")
+    elif "Cycle failed" in text:
+        outcome = ("crit", "Failed - see output")
+    elif running:
+        outcome = ("warn", "Running...")
+    else:
+        outcome = ("warn", "Ended without a result - see output")
+    noise = (" | INFO | ", "Order placed:", "[ORDER PREVIEW]", "RemoteException", "CategoryInfo",
+             "FullyQualifiedErrorId", "At line:", "+ ")
+    lines = [l for l in text.splitlines() if l.strip() and not any(n in l for n in noise)]
+    return {"running": running, "outcome": outcome, "started": started, "tail": lines[-14:], "log": log}
 
 
-def build_positions_from_trades(trades: pd.DataFrame) -> pd.DataFrame:
-    req = {"symbol", "side", "quantity", "price"}
-    if trades is None or trades.empty or not req.issubset(trades.columns):
-        return pd.DataFrame()
+def launch_manual_run(skip_data: bool) -> None:
+    MANUAL_DIR.mkdir(parents=True, exist_ok=True)
+    log = MANUAL_DIR / f"run_{datetime.now(TZ):%Y%m%d-%H%M%S}.log"
+    args = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "run_bot_now.ps1")]
+    if skip_data:
+        args.append("-SkipData")
+    with log.open("w", encoding="utf-8") as fh:
+        # Detached + no window: the run keeps going even if the dashboard page reloads.
+        proc = subprocess.Popen(
+            args, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    MANUAL_STATE.write_text(json.dumps({"pid": proc.pid, "started": datetime.now(timezone.utc).isoformat(),
+                                        "log": str(log), "skip_data": skip_data}), encoding="utf-8")
 
-    df = trades.copy()
-    if "timestamp" in df.columns:
-        df["timestamp"] = to_ts(df["timestamp"])
-        df = df.sort_values("timestamp")
 
-    positions: Dict[str, Dict[str, float]] = {}
-    for _, r in df.iterrows():
-        sym = str(r["symbol"])
-        side = str(r["side"]).strip().lower()
-        qty = float(pd.to_numeric(r.get("quantity", 0), errors="coerce") or 0)
-        px = float(pd.to_numeric(r.get("price", 0), errors="coerce") or 0)
-        if qty <= 0 or px <= 0:
+def run_control_bar() -> None:
+    # Inline confirmation (not st.dialog): this page has auto-refreshing fragments, and
+    # a dialog is closed by the next fragment refresh. The button lives outside them.
+    flag = (LOGS / "emergency_stop.flag").exists()
+    c1, c2 = st.columns([1, 4], vertical_alignment="center")
+    with c1:
+        if st.button("▶ Run bot now", type="primary", width="stretch", disabled=flag,
+                     help="Emergency stop is on" if flag else "Run one trading cycle now (Testnet, paper money)"):
+            st.session_state["confirm_run"] = True
+    with c2:
+        run_status_panel(flag)
+
+    if st.session_state.get("confirm_run") and not flag:
+        with st.container(border=True):
+            current = manual_run_status()
+            if current and current["running"]:
+                st.warning("A manual run is already in progress - wait for it to finish.")
+                if st.button("OK"):
+                    st.session_state["confirm_run"] = False
+                    st.rerun()
+                return
+            st.markdown("**Run one trading cycle now?** V7 + memes (anti-rug) + news + the ML sleeve, once, on "
+                        "Binance **Testnet** with paper money - same as `.\\run_bot_now.ps1`. If an automatic "
+                        "cycle is in progress it waits for it to finish first.")
+            skip = st.checkbox("Skip the market-data refresh (about 1 minute faster)", value=False)
+            b1, b2, _ = st.columns([1, 1, 3])
+            if b1.button("Yes, run it", type="primary", width="stretch"):
+                launch_manual_run(skip)
+                st.session_state["confirm_run"] = False
+                st.rerun()
+            if b2.button("Cancel", width="stretch"):
+                st.session_state["confirm_run"] = False
+                st.rerun()
+
+
+@st.fragment(run_every=5)
+def run_status_panel(flag: bool) -> None:
+    status = manual_run_status()
+    if flag:
+        st.markdown(status_badge("crit", "Emergency stop is on - button disabled"), unsafe_allow_html=True)
+    elif status is None:
+        st.markdown('<span class="note">No manual run yet. The autopilot also trades every hour on its own.</span>',
+                    unsafe_allow_html=True)
+    else:
+        lvl, text = status["outcome"]
+        st.markdown(status_badge(lvl, f"Last manual run: {text}")
+                    + f'<span class="note"> &nbsp;started {et(status["started"])}</span>',
+                    unsafe_allow_html=True)
+        with st.expander("Manual run output", expanded=status["running"]):
+            st.code("\n".join(status["tail"]) or "(starting...)", language=None)
+            st.caption(f"Full log: {status['log']}")
+
+
+# --------------------------------------------------------------------------- #
+# Derived portfolio views                                                     #
+# --------------------------------------------------------------------------- #
+def v7_positions(prices: Dict[str, float]) -> pd.DataFrame:
+    snap = read_csv(LOGS / "positions_snapshot.csv")
+    if snap.empty:
+        return snap
+    snap = snap[snap["timestamp"] == snap["timestamp"].max()]
+    rows = []
+    for _, r in snap.iterrows():
+        base = str(r["symbol"]).split("/")[0]
+        qty, entry = float(r["quantity"]), float(r["avg_entry_price"])
+        if qty <= 0:
             continue
-
-        pos = positions.get(sym, {"qty": 0.0, "avg": 0.0})
-        if side == "buy":
-            new_qty = pos["qty"] + qty
-            pos["avg"] = (pos["qty"] * pos["avg"] + qty * px) / new_qty if new_qty > 0 else 0.0
-            pos["qty"] = new_qty
-        elif side == "sell":
-            pos["qty"] = max(0.0, pos["qty"] - qty)
-            if pos["qty"] == 0:
-                pos["avg"] = 0.0
-        positions[sym] = pos
-
-    rows = [{"Symbol": s, "Qty": p["qty"], "Entry Price": p["avg"]} for s, p in positions.items() if p["qty"] > 0]
+        px = prices.get(base, float(r["last_price"]))
+        rows.append({"Coin": base, "Qty": qty, "Entry": entry, "Live Price": px, "Value": qty * px,
+                     "P&L $": qty * (px - entry), "P&L %": (px / entry - 1) * 100 if entry else 0.0})
     return pd.DataFrame(rows)
 
 
-inject_css()
-
-# ----------------------------
-# Sidebar
-# ----------------------------
-with st.sidebar:
-    st.markdown("### Controls")
-    auto_refresh = st.checkbox("Auto-refresh", value=True)
-    refresh_interval = st.selectbox("Refresh interval", ["15s", "30s", "60s", "Manual"], index=1)
-    interval_map = {"15s": 15, "30s": 30, "60s": 60, "Manual": 0}
-    interval_sec = interval_map[refresh_interval]
-    info("Chart scaling is now controlled directly on the chart (zoom/pan/reset).")
-    if auto_refresh and interval_sec > 0:
-        if st_autorefresh is not None:
-            st_autorefresh(interval=interval_sec * 1000, key="dashboard_autorefresh")
-        else:
-            info("Auto-refresh package not available. Use Refresh button.")
-
-    section_overview = st.checkbox("Overview", value=True)
-    section_positions = st.checkbox("Positions", value=True)
-    section_long_term_core = st.checkbox("Long-Term Core", value=True)
-    section_trades = st.checkbox("Trades", value=True)
-    section_signals = st.checkbox("Signals", value=True)
-    section_risk = st.checkbox("Risk", value=True)
-    section_optimization = st.checkbox("Optimization Data", value=False)
-
-    st.markdown("---")
-    range_choice = st.selectbox("Time Range", ["ALL", "1D", "1W", "1M"], index=0)
-
-    if st.button("Refresh"):
-        st.rerun()
-
-# Keep the dashboard updating automatically by default so each live-run write
-# to logs (equity/trades/positions) appears without manual page reload.
-if auto_refresh and interval_sec > 0:
-    st.caption(f"Auto-refresh active: every {interval_sec}s")
-else:
-    st.caption("Auto-refresh is off (manual refresh mode)")
-
-# ----------------------------
-# Load data
-# ----------------------------
-trades_df, trades_err = load_csv(PATHS["trades"])
-equity_df, equity_err = load_csv(PATHS["equity"])
-legacy_equity_df, legacy_equity_err = load_csv(PATHS["equity_legacy"])
-signals_df, signals_err = load_csv(PATHS["signals"])
-positions_snap_df, positions_snap_err = load_csv(PATHS["positions_snapshot"])
-audit, audit_err = load_json(PATHS["audit"])
-
-for msg in [trades_err, equity_err, signals_err, audit_err]:
-    if msg:
-        if "Missing" in msg or "Empty" in msg:
-            warn(msg)
-        else:
-            info(msg)
-# positions snapshot is optional; ignore missing/empty warnings.
-if positions_snap_err and "Malformed" in positions_snap_err:
-    info(positions_snap_err)
-# Legacy equity file is optional; only surface malformed errors.
-if legacy_equity_err and "Malformed" in legacy_equity_err:
-    info(legacy_equity_err)
-
-merged_equity_df = merge_equity_history(equity_df, legacy_equity_df)
-if merged_equity_df is not None and not merged_equity_df.empty:
-    equity_df = merged_equity_df
-
-# ----------------------------
-# Core metrics from real logs
-# ----------------------------
-current_equity = start_equity = total_return_pct = current_dd = max_dd = None
-cash = open_value = None
-realized_pnl = unrealized_pnl = None
-trade_count = trades_today = 0
-win_rate = None
-last_updated = None
-forward_start_utc = None
-
-if equity_df is not None and not equity_df.empty:
-    if "timestamp" in equity_df.columns:
-        equity_df["timestamp"] = to_ts(equity_df["timestamp"])
-        equity_df = equity_df.dropna(subset=["timestamp"]).sort_values("timestamp")
-        if not equity_df.empty:
-            last_updated = equity_df["timestamp"].iloc[-1]
-
-    eq_col = "total_equity" if "total_equity" in equity_df.columns else None
-    if eq_col is None:
-        eq_col = next((c for c in equity_df.columns if "equity" in c.lower()), None)
-
-    if eq_col:
-        eq = pd.to_numeric(equity_df[eq_col], errors="coerce").dropna()
-        if not eq.empty:
-            start_equity = STARTING_CAPITAL  # anchor to known $500 starting capital
-            current_equity = float(eq.iloc[-1])
-            total_return_pct = (current_equity / start_equity - 1.0) * 100.0
-            dd = drawdown_pct(eq)
-            current_dd = float(dd.iloc[-1])
-            max_dd = float(dd.min())
-
-    if "cash" in equity_df.columns:
-        s = pd.to_numeric(equity_df["cash"], errors="coerce").dropna()
-        cash = float(s.iloc[-1]) if not s.empty else None
-    if "open_position_value" in equity_df.columns:
-        s = pd.to_numeric(equity_df["open_position_value"], errors="coerce").dropna()
-        open_value = float(s.iloc[-1]) if not s.empty else None
-
-if trades_df is not None and not trades_df.empty:
-    trade_count = len(trades_df)
-    if "timestamp" in trades_df.columns:
-        trades_df["timestamp"] = to_ts(trades_df["timestamp"])
-        today = datetime.now(DISPLAY_TZ).date()
-        trades_today = int((trades_df["timestamp"].dt.tz_convert(DISPLAY_TZ).dt.date == today).sum())
-
-    if "realized_pnl" in trades_df.columns:
-        rp = pd.to_numeric(trades_df["realized_pnl"], errors="coerce").fillna(0)
-        realized_pnl = float(rp.sum())
-        closed = rp[rp != 0]
-        if not closed.empty:
-            win_rate = float((closed > 0).mean() * 100.0)
-
-positions_df = build_positions_from_trades(trades_df if trades_df is not None else pd.DataFrame())
-
-if positions_snap_df is not None and not positions_snap_df.empty:
-    ps = positions_snap_df.copy()
-    # Keep only latest snapshot timestamp.
-    if "timestamp" in ps.columns:
-        ps["timestamp"] = to_ts(ps["timestamp"])
-        ps = ps.dropna(subset=["timestamp"]).sort_values("timestamp")
-        if not ps.empty:
-            latest_ts = ps["timestamp"].iloc[-1]
-            ps = ps[ps["timestamp"] == latest_ts].copy()
-    required_cols = {
-        "symbol",
-        "quantity",
-        "avg_entry_price",
-        "last_price",
-        "market_value",
-        "unrealized_pnl",
-        "allocation_pct",
-    }
-    if required_cols.issubset(ps.columns):
-        positions_df = pd.DataFrame(
-            {
-                "Symbol": ps["symbol"].astype(str),
-                "Qty": pd.to_numeric(ps["quantity"], errors="coerce").fillna(0.0),
-                "Entry Price": pd.to_numeric(ps["avg_entry_price"], errors="coerce").fillna(0.0),
-                "Last Price": pd.to_numeric(ps["last_price"], errors="coerce").fillna(0.0),
-                "Market Value": pd.to_numeric(ps["market_value"], errors="coerce").fillna(0.0),
-                "Unrealized PnL": pd.to_numeric(ps["unrealized_pnl"], errors="coerce").fillna(0.0),
-                "Allocation %": pd.to_numeric(ps["allocation_pct"], errors="coerce").fillna(0.0) * 100.0,
-            }
-        )
-        positions_df = positions_df[positions_df["Qty"] > 0].sort_values("Market Value", ascending=False)
-        unrealized_pnl = float(positions_df["Unrealized PnL"].sum()) if not positions_df.empty else 0.0
-        open_value = float(positions_df["Market Value"].sum()) if not positions_df.empty else 0.0
-
-if not positions_df.empty and (positions_snap_df is None or positions_snap_df.empty):
-    # last trade price proxy
-    last_price = {}
-    if trades_df is not None and {"symbol", "price"}.issubset(trades_df.columns):
-        tmp = trades_df.copy()
-        tmp["price"] = pd.to_numeric(tmp["price"], errors="coerce")
-        if "timestamp" in tmp.columns:
-            tmp = tmp.sort_values("timestamp")
-        for _, r in tmp.dropna(subset=["price"]).iterrows():
-            last_price[str(r["symbol"])] = float(r["price"])
-
+def ml_positions(prices: Dict[str, float]) -> pd.DataFrame:
+    state = read_json(ML_LOGS / "state.json")
     rows = []
-    total_mv = 0.0
-    total_upnl = 0.0
-    for _, r in positions_df.iterrows():
-        sym = str(r["Symbol"])
-        qty = float(r["Qty"])
-        ep = float(r["Entry Price"])
-        lp = float(last_price.get(sym, ep))
-        mv = qty * lp
-        up = qty * (lp - ep)
-        total_mv += mv
-        total_upnl += up
-        alloc = (mv / current_equity * 100.0) if current_equity else 0.0
-        rows.append({
-            "Symbol": sym,
-            "Qty": qty,
-            "Entry Price": ep,
-            "Last Price": lp,
-            "Market Value": mv,
-            "Unrealized PnL": up,
-            "Allocation %": alloc,
-        })
-    positions_df = pd.DataFrame(rows).sort_values("Market Value", ascending=False)
-    unrealized_pnl = total_upnl
-    if open_value is None:
-        open_value = total_mv
+    for sym, p in (state.get("positions") or {}).items():
+        base = sym.split("/")[0]
+        px = prices.get(base, float(p["entry"]))
+        risk = float(p["risk"])
+        rows.append({"Coin": base, "Qty": float(p["qty"]), "Entry": float(p["entry"]), "Live Price": px,
+                     "Stop": float(p["sl"]), "Target": float(p["tp"]),
+                     "Open R": (px - float(p["entry"])) / risk if risk else 0.0,
+                     "Expires": et(p["expiry"]), "Model p": float(p.get("p", 0.0))})
+    return pd.DataFrame(rows)
 
-if current_equity is None:
-    current_equity = 0.0
-if open_value is None:
-    open_value = 0.0
-exposure_pct = (open_value / current_equity * 100.0) if current_equity > 0 else 0.0
 
-# Infer forward-testing start from earliest live timestamp available.
-forward_start_candidates = []
-if equity_df is not None and not equity_df.empty and "timestamp" in equity_df.columns:
-    s = equity_df["timestamp"].dropna()
-    if not s.empty:
-        forward_start_candidates.append(s.min())
-if trades_df is not None and not trades_df.empty and "timestamp" in trades_df.columns:
-    s = trades_df["timestamp"].dropna()
-    if not s.empty:
-        forward_start_candidates.append(s.min())
-if forward_start_candidates:
-    forward_start_utc = min(forward_start_candidates)
+# --------------------------------------------------------------------------- #
+# Sections                                                                    #
+# --------------------------------------------------------------------------- #
+def header(status: dict) -> None:
+    if status["emergency_flag"]:
+        badge = status_badge("crit", "EMERGENCY STOP")
+    elif status["safety_stop"]:
+        badge = status_badge("crit", "SAFETY STOP")
+    elif status["running"]:
+        badge = status_badge("good", "AUTOPILOT RUNNING")
+    else:
+        badge = status_badge("warn", "AUTOPILOT NOT RUNNING")
+    nxt = f"Next run {status['next_run'][11:16]} ET" if status["next_run"] else "Next run —"
+    last = et(status["last_activity"]) if status["last_activity"] else "—"
+    st.markdown(
+        f"""<div class="hdr"><div><div class="hdr-title">Crypto Quant Command Center</div>
+<div class="hdr-sub">Paper trading on Binance Spot Testnet · last bot activity {last} · {nxt}</div></div>
+<div>{badge}<span class="pill">TESTNET · PAPER MONEY</span></div></div>""",
+        unsafe_allow_html=True,
+    )
 
-status_fresh = bool(last_updated is not None and (datetime.now(timezone.utc) - last_updated.to_pydatetime()).total_seconds() < 300)
-risk_ok = (current_dd is None or current_dd > -RISK_DISPLAY["Total DD Stop %"]) and exposure_pct <= RISK_DISPLAY["Max Exposure %"]
 
-# Runner status details (last run + next run) for monitoring header.
-runner_last_run_txt = "N/A"
-runner_next_run_txt = "N/A"
-run_log_path = LOG_DIR / "live_runner_runs.csv"
-if run_log_path.exists():
+@st.fragment(run_every=15)
+def ticker_strip() -> None:
     try:
-        rr = pd.read_csv(run_log_path)
-        if rr is not None and not rr.empty:
-            if "timestamp" in rr.columns:
-                rr["timestamp"] = pd.to_datetime(rr["timestamp"], errors="coerce", utc=True)
-            rr = rr.dropna(subset=["timestamp"]).sort_values("timestamp")
-            if not rr.empty:
-                runner_last_run_txt = rr["timestamp"].iloc[-1].tz_convert(DISPLAY_TZ).strftime(
-                    f"%Y-%m-%d %H:%M:%S {DISPLAY_TZ_LABEL}"
-                )
-                if "next_run_utc" in rr.columns:
-                    nr = pd.to_datetime(rr["next_run_utc"], errors="coerce", utc=True).dropna()
-                    if not nr.empty:
-                        runner_next_run_txt = nr.iloc[-1].tz_convert(DISPLAY_TZ).strftime(
-                            f"%Y-%m-%d %H:%M:%S {DISPLAY_TZ_LABEL}"
-                        )
+        t = live_tickers(tuple(WATCHLIST))
+    except Exception as exc:
+        st.markdown(f'<div class="ticker note">Live prices unavailable: {exc}</div>', unsafe_allow_html=True)
+        return
+    items = "".join(
+        f'<div><b>{r["Coin"]}</b> <span class="px">{price_fmt(r["Price"])}</span> {delta_html(r["24h %"])}</div>'
+        for r in t.to_dict("records")
+    )
+    st.markdown(f'<div class="ticker">{items}</div>', unsafe_allow_html=True)
+
+
+def overview_tab(prices: Dict[str, float]) -> None:
+    v7_eq = read_csv(LOGS / "paper_equity.csv")
+    ml_eq = read_csv(ML_LOGS / "ml_equity.csv")
+    status = read_json(ROOT / "models" / "ml_status.json")
+
+    v7_pos = v7_positions(prices)
+    v7_cash = float(v7_eq["cash"].iloc[-1]) if not v7_eq.empty else V7_START
+    v7_now = v7_cash + (v7_pos["Value"].sum() if not v7_pos.empty else 0.0) + (
+        float(v7_eq["tax_reserve"].iloc[-1]) if not v7_eq.empty and "tax_reserve" in v7_eq else 0.0)
+    ml_state = read_json(ML_LOGS / "state.json")
+    ml_pos = ml_positions(prices)
+    ml_now = float(ml_state.get("cash", ML_START)) + float(ml_state.get("tax_reserve", 0.0)) + (
+        (ml_pos["Qty"] * ml_pos["Live Price"]).sum() if not ml_pos.empty else 0.0)
+    total = v7_now + ml_now
+    fng = fear_greed(30)
+    fng_now = fng["fng"].iloc[-1] if not fng.empty else None
+    fng_lbl = fng["label"].iloc[-1] if not fng.empty else ""
+
+    st.markdown(
+        '<div class="tiles">'
+        + tile("Total (both accounts)", money(total), delta_html((total / (V7_START + ML_START) - 1) * 100) + " since start")
+        + tile("V7 account", money(v7_now), delta_html((v7_now / V7_START - 1) * 100) + " · live-priced")
+        + tile("ML account", money(ml_now), delta_html((ml_now / ML_START - 1) * 100)
+               + f" · {len(ml_pos)} open trade{'s' if len(ml_pos) != 1 else ''}")
+        + tile("ML new entries", "Allowed" if status.get("entries_allowed") else "Paused",
+               f"champion: {status.get('champion', '—')}")
+        + tile("Fear & Greed", f"{fng_now:.0f}" if fng_now is not None else "—", fng_lbl)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Account equity over time - one axis, two accounts (categorical slots 1, 2).
+    fig = go.Figure()
+    if not v7_eq.empty:
+        fig.add_trace(go.Scatter(x=v7_eq["timestamp"].dt.tz_convert(TZ), y=v7_eq["total_equity"], name="V7",
+                                 mode="lines", line=dict(color=C["s1"], width=2)))
+    if not ml_eq.empty:
+        fig.add_trace(go.Scatter(x=ml_eq["timestamp"].dt.tz_convert(TZ), y=ml_eq["equity"], name="ML sleeve",
+                                 mode="lines", line=dict(color=C["s2"], width=2)))
+    fig.add_hline(y=500, line=dict(color=C["axis"], width=1), annotation_text="$500 start",
+                  annotation_font_color=C["muted"], annotation_position="bottom left")
+    fig.update_yaxes(tickprefix="$")
+    show_chart(style_fig(fig, 320, "Account value"), "ov_equity")
+    st.markdown('<p class="note">Logs are written by the bot once per hourly run; the tiles above re-price open '
+                'positions with live prices.</p>', unsafe_allow_html=True)
+
+    profit_split_section()
+
+    with st.expander("▶ Run the bot now (one trading cycle, any time)"):
+        st.markdown("Paste into **PowerShell**. Safe while the autopilot runs: it waits for any cycle in progress.")
+        st.code("cd C:\\Users\\caide\\Downloads\\CRPTO-QUANT\n.\\run_bot_now.ps1", language="powershell")
+        st.markdown('<p class="note">Add <code>-SkipData</code> to skip the ~1 minute data refresh. '
+                    'Stop everything: <code>.\\stop_autopilot.ps1</code> · restart: '
+                    '<code>.\\install_autopilot.ps1</code></p>', unsafe_allow_html=True)
+
+
+def _realized(df: pd.DataFrame, pnl_col: str, tax_col: str, account: str) -> pd.DataFrame:
+    if df.empty or pnl_col not in df.columns:
+        return pd.DataFrame(columns=["timestamp", "account", "pnl", "tax"])
+    out = pd.DataFrame({
+        "timestamp": df["timestamp"], "account": account,
+        "pnl": pd.to_numeric(df[pnl_col], errors="coerce").fillna(0.0),
+        "tax": pd.to_numeric(df[tax_col], errors="coerce").fillna(0.0) if tax_col in df.columns else 0.0,
+    })
+    return out[out["pnl"] != 0]
+
+
+def profit_split_section() -> None:
+    from config import Config
+
+    rate = float(Config().portfolio.tax_reserve_rate)
+    st.markdown(f"#### Profit split · {rate:.0%} tax reserve / {1 - rate:.0%} reinvested")
+    st.markdown(
+        f'<p class="note">Every winning sale: {rate:.0%} of the profit moves into a locked tax reserve that is '
+        f'never traded; the other {1 - rate:.0%} stays in the account and is reinvested to compound. Losing '
+        'trades don\'t take money back out of the reserve (conservative).</p>',
+        unsafe_allow_html=True,
+    )
+    fills = pd.concat([
+        _realized(read_csv(LOGS / "live_trades.csv"), "realized_pnl", "tax_reserved", "V7"),
+        _realized(read_csv(ML_LOGS / "ml_trades.csv"), "pnl", "tax_reserved", "ML"),
+    ], ignore_index=True).sort_values("timestamp")
+    gains = fills.loc[fills["pnl"] > 0, "pnl"].sum()
+    losses = -fills.loc[fills["pnl"] < 0, "pnl"].sum()
+    reserved = fills["tax"].sum()
+    reinvested = gains - reserved
+    st.markdown(
+        '<div class="tiles">'
+        + tile("Tax reserve (locked)", money(reserved), f"{rate:.0%} of winning-trade profit")
+        + tile("Reinvested profit", money(reinvested), f"{1 - rate:.0%} back to work in the accounts")
+        + tile("Profit from winning trades", money(gains),
+               f"{int((fills['pnl'] > 0).sum())} winning sale{'s' if (fills['pnl'] > 0).sum() != 1 else ''}")
+        + tile("Net realized P&L", money(gains - losses), f"after {money(losses)} of realized losses")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    by_acct = (fills.assign(win=fills["pnl"].clip(lower=0), loss=(-fills["pnl"]).clip(lower=0))
+               .groupby("account")[["win", "loss", "tax"]].sum()
+               .reindex(["V7", "ML"]).fillna(0.0))
+    by_acct["reinvested"] = by_acct["win"] - by_acct["tax"]
+    table = by_acct.reset_index().rename(columns={
+        "account": "Account", "win": "Winning profit", "loss": "Realized losses",
+        "tax": "Tax reserve", "reinvested": "Reinvested"})
+    money_cols = ["Winning profit", "Realized losses", "Tax reserve", "Reinvested"]
+    st.dataframe(table, width="stretch", hide_index=True,
+                 column_config={c: st.column_config.NumberColumn(format="$%.2f") for c in money_cols})
+
+    wins = fills[fills["pnl"] > 0]
+    if wins.empty:
+        st.markdown('<p class="note">No winning trade has closed yet, so the reserve is still $0. It starts '
+                    'filling on the first profitable sale.</p>', unsafe_allow_html=True)
+        return
+    x = wins["timestamp"].dt.tz_convert(TZ)
+    f = go.Figure()
+    f.add_trace(go.Scatter(x=x, y=wins["tax"].cumsum(), mode="lines", name="Tax reserve",
+                           line=dict(color=C["s3"], width=2, shape="hv")))
+    f.add_trace(go.Scatter(x=x, y=(wins["pnl"] - wins["tax"]).cumsum(), mode="lines", name="Reinvested",
+                           line=dict(color=C["s1"], width=2, shape="hv")))
+    f.update_yaxes(tickprefix="$")
+    show_chart(style_fig(f, 260, "Cumulative profit split"), "profit_split")
+
+
+def prices_tab() -> None:
+    @st.fragment(run_every=15)
+    def table() -> None:
+        try:
+            t = live_tickers(tuple(WATCHLIST))
+        except Exception as exc:
+            st.warning(f"Live prices unavailable: {exc}")
+            return
+        t["Type"] = t["Coin"].map(lambda b: "meme" if b in MEMES else ("market" if b in ("BTC", "ETH") else "core"))
+        st.caption(f"Live from Binance public market data · refreshes every 15s · {datetime.now(TZ):%H:%M:%S} ET")
+        st.dataframe(
+            t, width="stretch", hide_index=True, height=min(780, 36 * (len(t) + 1)),
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%.8g"),
+                "24h %": st.column_config.NumberColumn(format="%+.2f%%"),
+                "24h High": st.column_config.NumberColumn(format="$%.8g"),
+                "24h Low": st.column_config.NumberColumn(format="$%.8g"),
+                "24h Volume ($)": st.column_config.NumberColumn(format="compact"),
+            },
+        )
+
+    left, right = st.columns([5, 7], gap="medium")
+    with left:
+        table()
+    with right:
+        c1, c2 = st.columns([2, 5])
+        coin = c1.selectbox("Coin", WATCHLIST, index=WATCHLIST.index("XRP"))
+        interval = c2.segmented_control("Timeframe", TIMEFRAMES, default="1h", key="timeframe") or "1h"
+        candle_chart(coin, interval)
+
+
+@st.fragment(run_every=15)
+def candle_chart(coin: str, interval: str) -> None:
+    try:
+        k = klines(coin, interval)
+    except Exception as exc:
+        st.warning(f"Chart unavailable: {exc}")
+        return
+    k["MA20"] = k["Close"].rolling(20).mean()
+    k["MA50"] = k["Close"].rolling(50).mean()
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=k["t"], open=k["Open"], high=k["High"], low=k["Low"], close=k["Close"], name=coin,
+        increasing=dict(line=dict(color=C["up"], width=1), fillcolor=C["up"]),
+        decreasing=dict(line=dict(color=C["down"], width=1), fillcolor=C["down"]),
+    ))
+    fig.add_trace(go.Scatter(x=k["t"], y=k["MA20"], name="20-period avg", mode="lines",
+                             line=dict(color=C["ink2"], width=1.5)))
+    fig.add_trace(go.Scatter(x=k["t"], y=k["MA50"], name="50-period avg", mode="lines",
+                             line=dict(color=C["s3"], width=1.5)))
+    # Overlay the bot's own levels on this coin, if it holds it.
+    levels = []
+    ml_state = read_json(ML_LOGS / "state.json")
+    pos = (ml_state.get("positions") or {}).get(f"{coin}/USDT")
+    if pos:
+        levels += [(pos["entry"], "ML entry", C["muted"]), (pos["sl"], "ML stop", C["muted"]),
+                   (pos["tp"], "ML target", C["muted"])]
+    v7 = read_csv(LOGS / "positions_snapshot.csv")
+    if not v7.empty:
+        row = v7[(v7["timestamp"] == v7["timestamp"].max()) & (v7["symbol"] == f"{coin}/USDT")]
+        if not row.empty and float(row["quantity"].iloc[0]) > 0:
+            levels.append((float(row["avg_entry_price"].iloc[0]), "V7 entry", C["s1"]))
+    # Keep the y-axis on the candles: a level far outside them (e.g. an old entry price on
+    # a 5-minute chart) would squash the candles flat - list those as text instead.
+    lo, hi = float(k["Low"].min()), float(k["High"].max())
+    pad = (hi - lo) * 0.08 or hi * 0.01
+    off_chart = []
+    for y, name, color in levels:
+        if lo - 3 * pad <= y <= hi + 3 * pad:
+            fig.add_hline(y=y, line=dict(color=color, width=1), annotation_text=name,
+                          annotation_font_color=C["ink2"], annotation_position="top left")
+            lo, hi = min(lo, y), max(hi, y)
+        else:
+            off_chart.append(f"{name} {price_fmt(y)} ({'above' if y > hi else 'below'} this chart)")
+    fig.update_yaxes(range=[lo - pad, hi + pad])
+    fig.update_layout(xaxis_rangeslider_visible=False)
+    last = k["Close"].iloc[-1]
+    chg = (last / k["Close"].iloc[0] - 1) * 100
+    show_chart(style_fig(fig, 470, f"{coin}/USDT · {interval} candles · last {price_fmt(last)} "
+                                    f"({chg:+.2f}% over chart) · updated {datetime.now(TZ):%H:%M:%S} ET"),
+               f"candles_{coin}_{interval}")
+    if off_chart:
+        st.caption("Bot levels off this chart: " + " · ".join(off_chart))
+    with st.expander("Table view"):
+        st.dataframe(k.drop(columns=["MA20", "MA50"]).tail(50).iloc[::-1], width="stretch", hide_index=True)
+
+
+def v7_tab(prices: Dict[str, float]) -> None:
+    eq = read_csv(LOGS / "paper_equity.csv")
+    trades = read_csv(LOGS / "live_trades.csv")
+    pos = v7_positions(prices)
+    st.markdown("**V7 — HighBeta + ONDO sector rotation** (+ meme sleeve, 3% cap, anti-rug guarded)")
+    if eq.empty:
+        st.info("No V7 equity logged yet.")
+    else:
+        x = eq["timestamp"].dt.tz_convert(TZ)
+        y = eq["total_equity"].astype(float)
+        dd = (y / y.cummax() - 1) * 100
+        # Two charts, shared time axis - never one chart with two y-scales.
+        f1 = go.Figure(go.Scatter(x=x, y=y, mode="lines", name="Equity", line=dict(color=C["s1"], width=2)))
+        f1.update_yaxes(tickprefix="$")
+        show_chart(style_fig(f1, 280, "V7 equity"), "v7_eq")
+        f2 = go.Figure(go.Scatter(x=x, y=dd, mode="lines", name="Drawdown", fill="tozeroy",
+                                  line=dict(color=C["down"], width=1.5), fillcolor="rgba(230,103,103,0.15)"))
+        f2.add_hline(y=-30, line=dict(color=C["critical"], width=1), annotation_text="-30% safety stop",
+                     annotation_font_color=C["ink2"], annotation_position="bottom left")
+        f2.update_yaxes(ticksuffix="%")
+        show_chart(style_fig(f2, 200, "Drawdown from peak"), "v7_dd")
+
+    st.markdown("**Open positions (live-priced)**")
+    if pos.empty:
+        st.info("V7 holds no positions right now (in cash).")
+    else:
+        st.dataframe(pos, width="stretch", hide_index=True, column_config={
+            "Entry": st.column_config.NumberColumn(format="$%.6g"),
+            "Live Price": st.column_config.NumberColumn(format="$%.6g"),
+            "Value": st.column_config.NumberColumn(format="$%.2f"),
+            "P&L $": st.column_config.NumberColumn(format="$%+.2f"),
+            "P&L %": st.column_config.NumberColumn(format="%+.2f%%"),
+        })
+    st.markdown("**Trade history**")
+    if trades.empty:
+        st.info("No trades yet.")
+    else:
+        t = trades.sort_values("timestamp", ascending=False).copy()
+        t["timestamp"] = t["timestamp"].dt.tz_convert(TZ).dt.strftime("%Y-%m-%d %H:%M")
+        cols = [c for c in ["timestamp", "symbol", "side", "quantity", "price", "order_value_usd", "realized_pnl"]
+                if c in t.columns]
+        st.dataframe(t[cols], width="stretch", hide_index=True)
+
+
+def ml_tab(prices: Dict[str, float]) -> None:
+    status = read_json(ROOT / "models" / "ml_status.json")
+    eq = read_csv(ML_LOGS / "ml_equity.csv")
+    trades = read_csv(ML_LOGS / "ml_trades.csv")
+    signals = read_csv(ML_LOGS / "ml_signals.csv")
+    pos = ml_positions(prices)
+
+    allowed = bool(status.get("entries_allowed"))
+    st.markdown(
+        (status_badge("good", "NEW ENTRIES ALLOWED") if allowed else status_badge("warn", "NEW ENTRIES PAUSED"))
+        + f'<span class="note">&nbsp; {status.get("health_reason", "no research run yet")} · champion '
+          f'<b>{status.get("champion", "—")}</b> · last research {str(status.get("last_research", "—"))[:10]}</span>',
+        unsafe_allow_html=True,
+    )
+    st.markdown('<p class="note">Bracket trades at 2:1 reward:risk · 1% of the account risked per trade · '
+                'stop 1.5×ATR · 14-day limit · own $500 ledger, separate from V7.</p>', unsafe_allow_html=True)
+
+    closed = trades[trades.get("side", pd.Series(dtype=str)) == "sell"] if not trades.empty else trades
+    r = pd.to_numeric(closed["r_multiple"], errors="coerce").dropna() if not closed.empty else pd.Series(dtype=float)
+    ml_state = read_json(ML_LOGS / "state.json")
+    ml_now = (float(ml_state.get("cash", ML_START)) + float(ml_state.get("tax_reserve", 0.0))
+              + ((pos["Qty"] * pos["Live Price"]).sum() if not pos.empty else 0.0))
+    st.markdown(
+        '<div class="tiles">'
+        + tile("ML account", money(ml_now), delta_html((ml_now / ML_START - 1) * 100))
+        + tile("Closed trades", str(len(r)), f"win rate {(r > 0).mean():.0%}" if len(r) else "none yet")
+        + tile("Avg R per trade", f"{r.mean():+.2f}R" if len(r) else "—", "target +2R / stop −1R")
+        + tile("Open trades", str(len(pos)), "max 5")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    if not eq.empty:
+        f = go.Figure(go.Scatter(x=eq["timestamp"].dt.tz_convert(TZ), y=eq["equity"], mode="lines",
+                                 name="ML equity", line=dict(color=C["s2"], width=2)))
+        f.update_yaxes(tickprefix="$")
+        show_chart(style_fig(f, 260, "ML account value"), "ml_eq")
+
+    st.markdown("**Open bracket trades (live-priced)**")
+    if pos.empty:
+        st.info("No open ML trades.")
+    else:
+        st.dataframe(pos, width="stretch", hide_index=True, column_config={
+            c: st.column_config.NumberColumn(format="$%.6g") for c in ("Entry", "Live Price", "Stop", "Target")
+        } | {"Open R": st.column_config.NumberColumn(format="%+.2fR"),
+             "Model p": st.column_config.NumberColumn(format="percent")})
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Latest daily signals** (why each coin was or wasn't bought)")
+        if signals.empty:
+            st.caption("No signal has cleared the EV gate yet.")
+        else:
+            st.dataframe(signals.iloc[::-1].head(50), width="stretch", hide_index=True)
+    with c2:
+        st.markdown("**ML trade log**")
+        if trades.empty:
+            st.caption("No ML trades yet.")
+        else:
+            t = trades.sort_values("timestamp", ascending=False).copy()
+            t["timestamp"] = t["timestamp"].dt.tz_convert(TZ).dt.strftime("%Y-%m-%d %H:%M")
+            st.dataframe(t, width="stretch", hide_index=True)
+
+    reports = sorted((ROOT / "outputs" / "research_reports").glob("*.md"))
+    if reports:
+        with st.expander(f"Latest weekly research report ({reports[-1].stem})"):
+            st.markdown(reports[-1].read_text(encoding="utf-8"))
+
+
+TREND_LOGS = LOGS / "paper_trend"
+TREND_START = 500.0
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def trend_signal() -> dict:
+    """Why the paper strategy wants its weight: recomputed from the same completed daily candles and
+    the same rule function paper_trend.py uses (read-only imports - nothing is modified)."""
+    import math
+
+    import numpy as np
+    from paper_trend import completed_daily_candles
+    from simple_baselines import SMA, VOL_LOOKBACK, VOL_TARGET, target_weight_d
+
+    c = completed_daily_candles()["Close"]
+    sma = float(c.rolling(SMA).mean().iloc[-1])
+    vol = float(np.log(c).diff().rolling(VOL_LOOKBACK).std().iloc[-1] * math.sqrt(365))
+    return {"date": c.index[-1], "close": float(c.iloc[-1]), "sma": sma, "vol": vol,
+            "vol_target": VOL_TARGET, "target": float(target_weight_d(c).iloc[-1]),
+            "closes": c}
+
+
+def trend_tab(prices: Dict[str, float]) -> None:
+    st.markdown("**Trend (paper)** - BTC long while above its 200-day average, sized to 40% volatility (max 1x), "
+                "trades only when the weight is off by more than 10 points. Paper-only: no orders are sent.")
+    state = read_json(TREND_LOGS / "state.json")
+    if not state:
+        st.info("The paper trend strategy hasn't started yet (no logs/paper_trend/state.json).")
+        return
+    eq = read_csv_plain(TREND_LOGS / "equity.csv", "date")
+    trades = read_csv_plain(TREND_LOGS / "trades.csv", "date")
+
+    # --- current equity / weights (live-priced) --------------------------------------------
+    btc_px = prices.get("BTC")
+    units, cash = float(state["units"]), float(state["cash"])
+    last_close = float(eq["close"].iloc[-1]) if not eq.empty else None
+    px = btc_px or last_close or 0.0
+    equity = cash + units * px
+    weight = units * px / equity if equity > 0 else 0.0
+    target = float(state["pending_target"])
+    # Signal at the last processed close -> fill at the OPEN of the next daily candle (00:00 UTC),
+    # booked by paper_trend.py once that candle has completed (the following 00:00 UTC).
+    fill_day = pd.Timestamp(state["last_processed"]) + pd.Timedelta(days=1)
+    next_open = fill_day.tz_localize("UTC")
+    booked_at = next_open + pd.Timedelta(days=1)
+    gap = abs(target - weight)
+    action = (f"trades to {target:.0%} at the {fill_day:%b %d} open ({et(next_open)}); "
+              f"booked when that candle closes ({et(booked_at)})"
+              if gap > 0.10 else f"no trade needed (gap {gap * 100:.0f} pts <= 10-pt band)")
+    st.markdown(
+        '<div class="tiles">'
+        + tile("Trend paper equity", money(equity), delta_html((equity / TREND_START - 1) * 100)
+               + f" vs {money(TREND_START)} start · live-priced")
+        + tile("BTC weight now", f"{weight:.0%}", f"{units:.6f} BTC · cash {money(cash)}")
+        + tile("Target weight", f"{target:.0%}", action)
+        + tile("Running since", str(state["start_date"]), f"last close processed {state['last_processed']}")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # --- why -----------------------------------------------------------------------------
+    try:
+        sig = trend_signal()
+        above = sig["close"] > sig["sma"]
+        raw = min(1.0, sig["vol_target"] / sig["vol"]) if sig["vol"] > 0 else 0.0
+        st.markdown(
+            '<div class="tiles">'
+            + tile("BTC vs 200-day avg", status_badge("good" if above else "warn", "ABOVE" if above else "BELOW"),
+                   f"close {price_fmt(sig['close'])} vs avg {price_fmt(sig['sma'])} "
+                   f"({(sig['close'] / sig['sma'] - 1) * 100:+.1f}%) on {sig['date'].date()}")
+            + tile("30-day volatility vs 40%", f"{sig['vol']:.1%}",
+                   f"40% / {sig['vol']:.1%} = {sig['vol_target'] / sig['vol']:.2f}x -> capped at 1x = {raw:.0%}"
+                   if raw >= 1.0 else f"40% / {sig['vol']:.1%} = {raw:.0%} of capital")
+            + tile("Rule result", f"{sig['target']:.0%}",
+                   ("above the average, so size = min(1, 40% / vol)" if above else "below the average, so cash")
+                   + ("" if abs(sig["target"] - target) < 1e-9 else " · differs from ledger: next run will update"))
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+    except Exception as exc:
+        st.warning(f"Couldn't recompute the signal right now: {exc}")
+
+    # --- last run / errors -----------------------------------------------------------------
+    log = TREND_LOGS / "run.log"
+    lines = log.read_text(encoding="utf-8", errors="ignore").splitlines() if log.exists() else []
+    errors = [l for l in lines if " ERROR " in l]
+    if lines:
+        last = lines[-1]
+        fresh = datetime.now(timezone.utc) - pd.Timestamp(last[:19]).tz_localize("UTC").to_pydatetime() < timedelta(hours=2)
+        st.markdown(
+            status_badge("good" if fresh and " ERROR " not in last else "warn",
+                         f"Last run {et(pd.Timestamp(last[:19]).tz_localize('UTC'))}")
+            + f'<span class="note"> &nbsp;{last[24:]}</span>', unsafe_allow_html=True)
+    if errors:
+        st.markdown(status_badge("crit", f"{len(errors)} error(s) in run.log") + " - most recent:",
+                    unsafe_allow_html=True)
+        st.code("\n".join(errors[-5:]), language=None)
+    else:
+        st.markdown(status_badge("good", "No errors in run.log"), unsafe_allow_html=True)
+
+    # --- comparison chart: all rebased to $500 at the trend start close ---------------------
+    start = pd.Timestamp(state["start_date"])
+    series = {}
+    if not eq.empty:
+        series["Trend (paper)"] = eq.set_index("date")["equity"].astype(float)
+    v7 = read_csv(LOGS / "paper_equity.csv")
+    last_done = pd.Timestamp(state["last_processed"])
+    if not v7.empty:
+        ts = v7["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
+        val = v7["total_equity"].astype(float)
+        after_close = val[ts >= start + pd.Timedelta(days=1)]          # V7 logs hourly, not at 00:00 UTC
+        if not after_close.empty:
+            anchor = float(after_close.iloc[0])                      # first V7 value after the start close
+            daily = val.groupby(ts.dt.normalize()).last()
+            daily = daily[(daily.index > start) & (daily.index <= last_done)]   # completed days only
+            v7s = pd.concat([pd.Series({start: anchor}), daily])
+            series["V7 (paper)"] = v7s / anchor * TREND_START
+    try:
+        closes = trend_signal()["closes"]
+        btc = closes[closes.index >= start]
+        if not btc.empty:
+            series["BTC buy & hold"] = btc / btc.iloc[0] * TREND_START
     except Exception:
         pass
+    colors = {"Trend (paper)": C["s3"], "V7 (paper)": C["s1"], "BTC buy & hold": C["ink2"]}
+    f = go.Figure()
+    for name, s in series.items():
+        f.add_trace(go.Scatter(x=s.index, y=s.values, mode="lines+markers", name=name,
+                               line=dict(color=colors[name], width=2), marker=dict(size=8)))
+    f.add_hline(y=TREND_START, line=dict(color=C["axis"], width=1))
+    f.update_yaxes(tickprefix="$")
+    last_x = max((s.index.max() for s in series.values()), default=start)
+    f.update_xaxes(type="date", tickformat="%b %d", dtick=86400000,          # whole days, never sub-second ticks
+                   range=[start - pd.Timedelta(days=1), max(last_x, start + pd.Timedelta(days=7))])
+    show_chart(style_fig(f, 320, f"Daily equity, all rebased to $500 at the {start.date()} close"), "trend_eq")
+    days = max(len(s) for s in series.values()) if series else 0
+    if days < 5:
+        st.caption(f"Only {days} daily point(s) so far - the comparison fills in one point per completed day (00:00 UTC).")
 
-# ----------------------------
-# Header
-# ----------------------------
-last_txt = (
-    last_updated.tz_convert(DISPLAY_TZ).strftime(f"%Y-%m-%d %H:%M:%S {DISPLAY_TZ_LABEL}")
-    if last_updated is not None
-    else "N/A"
-)
-st.markdown(
-    f"""
-<div class="hdr">
-  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-    <div>
-      <div class="hdr-title">Crypto Quant Command Center</div>
-      <div class="hdr-sub">
-        Strategy: {STRATEGY_INFO['name']} &nbsp;|&nbsp;
-        Live Since: {LIVE_START_DATE} &nbsp;|&nbsp;
-        Starting Capital: ${STARTING_CAPITAL:,.0f} &nbsp;|&nbsp;
-        Mode: Binance Spot Testnet
-      </div>
-    </div>
-    <div>
-      <span class="badge">TESTNET</span>
-      <span class="badge">PAPER MODE</span>
-      <span class="badge badge-green">SANDBOX ON</span>
-      <span class="badge {'badge-green' if risk_ok else 'badge-red'}">{'RISK OK' if risk_ok else 'RISK STOP'}</span>
-      <span class="badge">TAX RESERVE ACTIVE</span>
-    </div>
-  </div>
-  <div class="hdr-sub">Last Updated: {last_txt} &nbsp;|&nbsp; Bot: {'RUNNING' if status_fresh else 'STOPPED'} &nbsp;|&nbsp; Last Run: {runner_last_run_txt} &nbsp;|&nbsp; Next Run: {runner_next_run_txt}</div>
-</div>
-    """,
-    unsafe_allow_html=True,
-)
+    dd_rows = []
+    for name, s in series.items():
+        dd_rows.append({"Strategy": name, "Value now (rebased)": float(s.iloc[-1]),
+                        "Return": float(s.iloc[-1] / TREND_START - 1),
+                        "Max drawdown": float((s / s.cummax() - 1).min()), "Daily points": len(s)})
+    st.dataframe(pd.DataFrame(dd_rows), width="stretch", hide_index=True, column_config={
+        "Value now (rebased)": st.column_config.NumberColumn(format="$%.2f"),
+        "Return": st.column_config.NumberColumn(format="percent"),
+        "Max drawdown": st.column_config.NumberColumn(format="percent")})
 
-# ----------------------------
-# Overview
-# ----------------------------
-if section_overview:
-    st.markdown('<div class="section-title">Overview</div>', unsafe_allow_html=True)
-
-    cards = [
-        metric_card("Current Equity", fmt_money(current_equity)),
-        metric_card("Total Return %", fmt_pct(total_return_pct), "pos" if (total_return_pct or 0) > 0 else "neg" if (total_return_pct or 0) < 0 else ""),
-        metric_card("Cash Available", fmt_money(cash)),
-        metric_card("Open Position Value", fmt_money(open_value)),
-        metric_card("Current Drawdown", fmt_pct(current_dd), "neg" if (current_dd or 0) < 0 else ""),
-        metric_card("Max Drawdown", fmt_pct(max_dd), "neg" if (max_dd or 0) < 0 else ""),
-        metric_card("Realized PnL", fmt_money(realized_pnl), "pos" if (realized_pnl or 0) > 0 else "neg" if (realized_pnl or 0) < 0 else ""),
-        metric_card("Unrealized PnL", fmt_money(unrealized_pnl), "pos" if (unrealized_pnl or 0) > 0 else "neg" if (unrealized_pnl or 0) < 0 else ""),
-        metric_card("Trades Today", str(trades_today)),
-        metric_card("Win Rate", fmt_pct(win_rate)),
-        metric_card("Exposure", fmt_pct(exposure_pct), "neg" if exposure_pct > RISK_DISPLAY["Max Exposure %"] else ""),
-    ]
-    st.markdown(f'<div class="metric-grid">{"".join(cards[:4])}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="metric-grid">{"".join(cards[4:8])}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="metric-grid">{"".join(cards[8:12])}</div>', unsafe_allow_html=True)
-
-    # V7 strategy reference card
-    live_return_str = f"{total_return_pct:+.2f}%" if total_return_pct is not None else "N/A"
-    live_return_color = "val-pos" if (total_return_pct or 0) > 0 else ("val-neg" if (total_return_pct or 0) < 0 else "")
-    st.markdown(
-        f"""
-<div class="box" style="margin-bottom:10px;">
-  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-    <div>
-      <div style="color:#9a9a9a; font-size:10px; text-transform:uppercase; letter-spacing:.1em;">Active Strategy</div>
-      <div style="color:#f2f2f2; font-size:13px; margin-top:4px;">{STRATEGY_INFO['name']}</div>
-      <div style="color:#9a9a9a; font-size:11px; margin-top:2px;">
-        Sectors: {STRATEGY_INFO['sectors']} &nbsp;·&nbsp;
-        Signal: {STRATEGY_INFO['signal']} &nbsp;·&nbsp;
-        Rebalance: {STRATEGY_INFO['rebalance']}
-      </div>
-    </div>
-    <div style="display:flex; gap:24px; text-align:center;">
-      <div>
-        <div style="color:#9a9a9a; font-size:10px; text-transform:uppercase; letter-spacing:.08em;">Backtest CAGR</div>
-        <div style="color:#00c076; font-size:16px; margin-top:2px;">{STRATEGY_INFO['backtest_cagr']}</div>
-        <div style="color:#9a9a9a; font-size:9px;">{STRATEGY_INFO['backtest_period']}</div>
-      </div>
-      <div>
-        <div style="color:#9a9a9a; font-size:10px; text-transform:uppercase; letter-spacing:.08em;">Backtest Sharpe</div>
-        <div style="color:#f2f2f2; font-size:16px; margin-top:2px;">{STRATEGY_INFO['backtest_sharpe']}</div>
-        <div style="color:#9a9a9a; font-size:9px;">Max DD {STRATEGY_INFO['backtest_maxdd']}</div>
-      </div>
-      <div>
-        <div style="color:#9a9a9a; font-size:10px; text-transform:uppercase; letter-spacing:.08em;">Live Return</div>
-        <div class="{live_return_color}" style="font-size:16px; margin-top:2px;">{live_return_str}</div>
-        <div style="color:#9a9a9a; font-size:9px;">Since {LIVE_START_DATE} · Start ${STARTING_CAPITAL:,.0f}</div>
-      </div>
-    </div>
-  </div>
-</div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown('<div class="section-title">Equity & Drawdown</div>', unsafe_allow_html=True)
-    if equity_df is None or equity_df.empty:
-        info("No equity data available.")
+    st.markdown("**Trades** (simulated fills at the daily open, 0.15% cost per side)")
+    if trades.empty:
+        st.caption(f"No trades booked yet - next fill uses the {fill_day:%b %d} open price ({et(next_open)}) "
+                   f"and is booked at {et(booked_at)}." if gap > 0.10 else "No trades booked yet.")
     else:
-        eq_col = "total_equity" if "total_equity" in equity_df.columns else next((c for c in equity_df.columns if "equity" in c.lower()), None)
-        ts_col = "timestamp" if "timestamp" in equity_df.columns else next((c for c in equity_df.columns if "time" in c.lower() or "date" in c.lower()), None)
-        if eq_col is None or ts_col is None:
-            warn("Could not detect required columns for equity chart.")
-        else:
-            chart_df = prepare_equity_history(equity_df, eq_col=eq_col, ts_col=ts_col)
+        st.dataframe(trades.sort_values("date", ascending=False), width="stretch", hide_index=True)
 
-            if range_choice != "ALL" and not chart_df.empty:
-                max_ts = chart_df[ts_col].max()
-                offset = {"1D": pd.Timedelta(days=1), "1W": pd.Timedelta(days=7), "1M": pd.Timedelta(days=30)}[range_choice]
-                chart_df = chart_df[chart_df[ts_col] >= max_ts - offset]
 
-            if chart_df.empty:
-                info("No data in selected range.")
-            else:
-                chart_df["dd"] = drawdown_pct(chart_df[eq_col])
-                chart_df["peak"] = chart_df[eq_col].cummax()
+def read_csv_plain(path: Path, date_col: str) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(path, parse_dates=[date_col])
+        return df.sort_values(date_col)
+    except Exception:
+        return pd.DataFrame()
 
-                fig = go.Figure()
-                fig.add_trace(
-                    go.Scatter(
-                        x=chart_df[ts_col],
-                        y=chart_df[eq_col],
-                        mode="lines",
-                        name="Equity",
-                        line=dict(color="#f2f2f2", width=2),
-                    )
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=chart_df[ts_col],
-                        y=chart_df["peak"],
-                        mode="lines",
-                        name="Peak",
-                        line=dict(color="#8a8a8a", width=1, dash="dot"),
-                    )
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=chart_df[ts_col],
-                        y=chart_df["dd"],
-                        mode="lines",
-                        name="Drawdown %",
-                        yaxis="y2",
-                        line=dict(color="#e03d3d", width=1.5),
-                    )
-                )
-                # Auto ranges; user can control interactively using Plotly in-chart tools.
-                y1_cfg = dict(title="Equity", tickprefix="$", gridcolor="#1f1f1f", fixedrange=False)
-                y2_cfg = dict(
-                    title="Drawdown %",
-                    overlaying="y",
-                    side="right",
-                    ticksuffix="%",
-                    showgrid=False,
-                    fixedrange=False,
-                )
-                fig.update_layout(
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="#111111",
-                    font=dict(color="#d0d0d0"),
-                    margin=dict(l=40, r=40, t=20, b=30),
-                    dragmode="zoom",
-                    xaxis=dict(
-                        gridcolor="#1f1f1f",
-                        rangeslider=dict(visible=True, thickness=0.08),
-                        rangeselector=dict(
-                            buttons=[
-                                dict(count=1, label="1D", step="day", stepmode="backward"),
-                                dict(count=7, label="1W", step="day", stepmode="backward"),
-                                dict(count=1, label="1M", step="month", stepmode="backward"),
-                                dict(step="all", label="ALL"),
-                            ]
-                        ),
-                        fixedrange=False,
-                    ),
-                    yaxis=y1_cfg,
-                    yaxis2=y2_cfg,
-                    legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
-                    height=360,
-                )
-                st.plotly_chart(
-                    fig,
-                    use_container_width=True,
-                    config={
-                        "scrollZoom": True,
-                        "displaylogo": False,
-                        "modeBarButtonsToAdd": ["pan2d", "zoom2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d"],
-                    },
-                )
 
-# ----------------------------
-# Positions
-# ----------------------------
-if section_positions:
-    st.markdown('<div class="section-title">Positions</div>', unsafe_allow_html=True)
-    if positions_df is None or positions_df.empty:
-        info("No open positions.")
-    else:
-        out = positions_df.copy()
-        out["Qty"] = out["Qty"].map(lambda x: f"{x:,.6f}")
-        for col in ["Entry Price", "Last Price"]:
-            out[col] = out[col].map(lambda x: f"${x:,.6f}")
-        out["Market Value"] = out["Market Value"].map(lambda x: f"${x:,.2f}")
-        out["Unrealized PnL"] = out["Unrealized PnL"].map(lambda x: f"${x:,.2f}")
-        out["Allocation %"] = out["Allocation %"].map(lambda x: f"{x:,.2f}%")
-        st.dataframe(out, use_container_width=True, hide_index=True)
+def news_tab() -> None:
+    from news_feed import coin_news_risk, coins_mentioned, headline_sentiment, market_mood
 
-# ----------------------------
-# Long-term core panel
-# ----------------------------
-if section_long_term_core:
-    st.markdown('<div class="section-title">Rotation Assets (XRP · HBAR · ONDO)</div>', unsafe_allow_html=True)
+    fng = fear_greed(365)
+    try:
+        items = headlines()
+    except Exception as exc:
+        items = []
+        st.warning(f"Headlines unavailable: {exc}")
+    risk = coin_news_risk(items)
+    mood = market_mood(items)
 
-    if positions_df is None or positions_df.empty:
-        info("No open positions in rotation assets (XRP, HBAR, ONDO).")
-    else:
-        core_rows = []
-        p = positions_df.copy()
-        p["base_symbol"] = p["Symbol"].astype(str).str.upper().map(
-            lambda s: s.split("/")[0].split("(")[0].strip()
-        )
-        core_positions = p[p["base_symbol"].isin(LONG_TERM_CORE_BASES)].copy()
-
-        # Optional net invested estimate from trade history (buys - sells notional).
-        invested_map: Dict[str, float] = {}
-        if trades_df is not None and not trades_df.empty and {"symbol", "side"}.issubset(trades_df.columns):
-            t = trades_df.copy()
-            if "order_value_usd" in t.columns:
-                t["order_value_usd"] = pd.to_numeric(t["order_value_usd"], errors="coerce").fillna(0.0)
-            else:
-                q = pd.to_numeric(t.get("quantity", 0.0), errors="coerce").fillna(0.0)
-                px = pd.to_numeric(t.get("price", 0.0), errors="coerce").fillna(0.0)
-                t["order_value_usd"] = q * px
-            t["base_symbol"] = t["symbol"].astype(str).str.upper().map(
-                lambda s: s.split("/")[0].split("(")[0].strip()
-            )
-            t = t[t["base_symbol"].isin(LONG_TERM_CORE_BASES)]
-            if not t.empty:
-                t["signed_notional"] = t["order_value_usd"] * t["side"].astype(str).str.lower().map(
-                    lambda side: 1.0 if side == "buy" else -1.0
-                )
-                invested = t.groupby("base_symbol", dropna=False)["signed_notional"].sum()
-                invested_map = {str(k): float(v) for k, v in invested.items()}
-
-        if core_positions.empty:
-            info("No current holdings in rotation asset set (XRP, HBAR, ONDO).")
-        else:
-            for _, r in core_positions.iterrows():
-                base = str(r["base_symbol"])
-                market_value = float(r.get("Market Value", 0.0) or 0.0)
-                net_invested = float(invested_map.get(base, 0.0))
-                core_rows.append(
-                    {
-                        "Base": base,
-                        "Symbol": str(r["Symbol"]),
-                        "Qty": float(r.get("Qty", 0.0) or 0.0),
-                        "Entry Price": float(r.get("Entry Price", 0.0) or 0.0),
-                        "Last Price": float(r.get("Last Price", 0.0) or 0.0),
-                        "Market Value": market_value,
-                        "Allocation %": float(r.get("Allocation %", 0.0) or 0.0),
-                        "Unrealized PnL": float(r.get("Unrealized PnL", 0.0) or 0.0),
-                        "Net Invested (Buys-Sells)": net_invested,
-                    }
-                )
-
-            core_df = pd.DataFrame(core_rows).sort_values("Market Value", ascending=False)
-            core_total_value = float(core_df["Market Value"].sum()) if not core_df.empty else 0.0
-            core_total_alloc = float(core_df["Allocation %"].sum()) if not core_df.empty else 0.0
-            core_total_upnl = float(core_df["Unrealized PnL"].sum()) if not core_df.empty else 0.0
-
+    left, right = st.columns([5, 7], gap="medium")
+    with left:
+        if not fng.empty:
+            now, lbl = fng["fng"].iloc[-1], fng["label"].iloc[-1]
+            wk = fng["fng"].iloc[-8] if len(fng) > 8 else None
             st.markdown(
-                f"""
-<div class="box">
-  <div style="font-size:12px; color:#f2f2f2;">Core Value: ${core_total_value:,.2f}</div>
-  <div style="font-size:11px; color:#9a9a9a;">Core Allocation: {core_total_alloc:,.2f}% | Core Unrealized PnL: ${core_total_upnl:,.2f}</div>
-</div>
-                """,
+                '<div class="tiles">'
+                + tile("Fear & Greed today", f"{now:.0f}", f"{lbl} · 0 = extreme fear, 100 = extreme greed")
+                + tile("1 week ago", f"{wk:.0f}" if wk is not None else "—",
+                       f"{now - wk:+.0f} pts" if wk is not None else "")
+                + tile("Headline mood (24h)", f"{mood:+.2f}" if mood is not None else "—",
+                       "word-count score, + positive / − negative")
+                + "</div>",
                 unsafe_allow_html=True,
             )
+            f = go.Figure(go.Scatter(x=fng["date"], y=fng["fng"], mode="lines", name="Fear & Greed",
+                                     line=dict(color=C["s1"], width=2)))
+            for y in (25, 50, 75):
+                f.add_hline(y=y, line=dict(color=C["axis"], width=1))
+            # Zone names live on the axis, so they never sit on top of the line.
+            f.update_yaxes(range=[0, 100], tickvals=[0, 25, 50, 75, 100],
+                           ticktext=["0", "25 extreme fear", "50 neutral", "75 extreme greed", "100"])
+            f = style_fig(f, 300, "Fear & Greed Index · 1 year (ML research feature)")
+            f.update_layout(margin=dict(l=120))
+            show_chart(f, "fng")
+        st.markdown("**Coins flagged by the news filter**")
+        if not risk:
+            st.markdown(status_badge("good", "No coin flagged in the last 48h"), unsafe_allow_html=True)
+        for coin, info in risk.items():
+            lvl = "crit" if info["level"] == "severe" else "warn"
+            action = "forces an exit if held" if info["level"] == "severe" else "blocks new buys"
+            st.markdown(status_badge(lvl, f"{coin}: {info['level'].upper()}") + f'<span class="note"> &nbsp;{action}</span>',
+                        unsafe_allow_html=True)
+            for h in info["headlines"][:3]:
+                st.markdown(f'<div class="note">• {h}</div>', unsafe_allow_html=True)
 
-            out = core_df.copy()
-            out["Qty"] = out["Qty"].map(lambda x: f"{x:,.6f}")
-            out["Entry Price"] = out["Entry Price"].map(lambda x: f"${x:,.6f}")
-            out["Last Price"] = out["Last Price"].map(lambda x: f"${x:,.6f}")
-            out["Market Value"] = out["Market Value"].map(lambda x: f"${x:,.2f}")
-            out["Allocation %"] = out["Allocation %"].map(lambda x: f"{x:,.2f}%")
-            out["Unrealized PnL"] = out["Unrealized PnL"].map(lambda x: f"${x:,.2f}")
-            out["Net Invested (Buys-Sells)"] = out["Net Invested (Buys-Sells)"].map(lambda x: f"${x:,.2f}")
-            st.dataframe(out, use_container_width=True, hide_index=True)
-
-# ----------------------------
-# Trades
-# ----------------------------
-if section_trades:
-    st.markdown('<div class="section-title">Trades</div>', unsafe_allow_html=True)
-    if trades_df is None or trades_df.empty:
-        info("No trades available.")
-    else:
-        t = trades_df.copy()
-        if "timestamp" in t.columns:
-            t["timestamp"] = to_display_ts(t["timestamp"])
-            t = t.sort_values("timestamp", ascending=False)
-        if "symbol" in t.columns:
-            symbols = ["ALL"] + sorted(t["symbol"].dropna().astype(str).unique().tolist())
-            pick = st.selectbox("Filter symbol", symbols, index=0)
-            if pick != "ALL":
-                t = t[t["symbol"] == pick]
-
-        cols = [c for c in ["timestamp", "symbol", "side", "quantity", "price", "order_value_usd", "realized_pnl"] if c in t.columns]
-        out = t[cols].head(100).copy()
-        st.dataframe(out, use_container_width=True, hide_index=True)
-
-# ----------------------------
-# Signals
-# ----------------------------
-if section_signals:
-    st.markdown('<div class="section-title">Signals</div>', unsafe_allow_html=True)
-    if signals_df is None or signals_df.empty:
-        info("No signal trace available.")
-    else:
-        s = signals_df.copy()
-        ts_col = next(
-            (
-                c
-                for c in ["timestamp", "signal_date", "signal_timestamp", "date", "created_at"]
-                if c in s.columns
-            ),
-            None,
-        )
-        if ts_col is None:
-            # No timestamp-like column detected; keep fallback behavior.
-            st.dataframe(s.tail(50), use_container_width=True, hide_index=True)
-        else:
-            s["_signal_ts_utc"] = pd.to_datetime(s[ts_col], errors="coerce", utc=True)
-            s = s.dropna(subset=["_signal_ts_utc"])
-
-            recent_cutoff = datetime.now(timezone.utc) - pd.Timedelta(days=FORWARD_SIGNAL_LOOKBACK_DAYS)
-            if forward_start_utc is not None:
-                cutoff_utc = max(recent_cutoff, forward_start_utc.to_pydatetime())
-            else:
-                cutoff_utc = recent_cutoff
-
-            filtered = s[s["_signal_ts_utc"] >= cutoff_utc].copy()
-            dropped_count = len(s) - len(filtered)
-            cutoff_ts = pd.Timestamp(cutoff_utc)
-            if cutoff_ts.tzinfo is None:
-                cutoff_ts = cutoff_ts.tz_localize("UTC")
-            else:
-                cutoff_ts = cutoff_ts.tz_convert("UTC")
-            cutoff_et_str = cutoff_ts.tz_convert(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-            if filtered.empty:
-                info(
-                    "No recent forward-test signals in the selected window "
-                    f"(cutoff: {cutoff_et_str} {DISPLAY_TZ_LABEL})."
-                )
-            else:
-                filtered[ts_col] = (
-                    filtered["_signal_ts_utc"].dt.tz_convert(DISPLAY_TZ).dt.strftime("%Y-%m-%d %H:%M:%S")
-                )
-                filtered = filtered.sort_values("_signal_ts_utc", ascending=False)
-                info(
-                    f"Showing recent forward-test signals only (last {FORWARD_SIGNAL_LOOKBACK_DAYS} days "
-                    f"and since live start). Filtered out {dropped_count} older rows."
-                )
-                st.dataframe(
-                    filtered.drop(columns=["_signal_ts_utc"]).head(100),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-# ----------------------------
-# Risk panel
-# ----------------------------
-if section_risk:
-    st.markdown('<div class="section-title">Risk</div>', unsafe_allow_html=True)
-    risk_rows = pd.DataFrame(
-        {
-            "Parameter": list(RISK_DISPLAY.keys()) + ["Current Exposure %", "Current Drawdown %", "Open Positions"],
-            "Value": [
-                f"${RISK_DISPLAY['Max Order Size (USD)']:.2f}",
-                f"${RISK_DISPLAY['Max Position Size (USD)']:.2f}",
-                f"{RISK_DISPLAY['Max Exposure %']:.2f}%",
-                f"{RISK_DISPLAY['Daily DD Stop %']:.2f}%",
-                f"{RISK_DISPLAY['Total DD Stop %']:.2f}%",
-                f"{exposure_pct:.2f}%",
-                f"{(current_dd if current_dd is not None else 0.0):.2f}%",
-                str(len(positions_df) if positions_df is not None else 0),
-            ],
-        }
-    )
-    st.dataframe(risk_rows, use_container_width=True, hide_index=True)
-
-    bar_color = "#00c076" if exposure_pct < 50 else ("#d4a017" if exposure_pct <= 80 else "#e03d3d")
-    st.markdown(
-        f"""
-<div class="box">
-  <div style="color:#9a9a9a; font-size:10px; text-transform:uppercase; letter-spacing:.1em; margin-bottom:6px;">Exposure Gauge</div>
-  <div style="height:8px; background:#1f1f1f; border:1px solid #2a2a2a; border-radius:999px; overflow:hidden;">
-    <div style="height:100%; width:{min(max(exposure_pct, 0), 100):.2f}%; background:{bar_color};"></div>
-  </div>
-</div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-# ----------------------------
-# Optimization data panel
-# ----------------------------
-if section_optimization:
-    st.markdown('<div class="section-title">Optimization Data</div>', unsafe_allow_html=True)
-
-    # 1) Data health / coverage
-    health_rows = []
-    for name, df in [
-        ("trades", trades_df),
-        ("equity", equity_df),
-        ("signals", signals_df),
-    ]:
-        row_count = int(len(df)) if df is not None else 0
-        start_ts = "N/A"
-        end_ts = "N/A"
-        if df is not None and not df.empty and "timestamp" in df.columns:
-            ts = pd.to_datetime(df["timestamp"], errors="coerce", utc=True).dropna()
-            if not ts.empty:
-                start_ts = ts.min().tz_convert(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-                end_ts = ts.max().tz_convert(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        elif df is not None and not df.empty and "signal_date" in df.columns:
-            ts = pd.to_datetime(df["signal_date"], errors="coerce", utc=True).dropna()
-            if not ts.empty:
-                start_ts = ts.min().tz_convert(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-                end_ts = ts.max().tz_convert(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        health_rows.append(
-            {
-                "dataset": name,
-                "rows": row_count,
-                f"start ({DISPLAY_TZ_LABEL})": start_ts,
-                f"end ({DISPLAY_TZ_LABEL})": end_ts,
-            }
-        )
-    st.dataframe(pd.DataFrame(health_rows), use_container_width=True, hide_index=True)
-
-    # 2) Trade quality by symbol
-    if trades_df is None or trades_df.empty:
-        info("No trade data available for optimization metrics.")
-    else:
-        t = trades_df.copy()
-        for c in ["realized_pnl", "fees_estimate", "order_value_usd"]:
-            if c in t.columns:
-                t[c] = pd.to_numeric(t[c], errors="coerce").fillna(0.0)
-        if "timestamp" in t.columns:
-            t["timestamp"] = pd.to_datetime(t["timestamp"], errors="coerce", utc=True)
-            t["trade_date_et"] = t["timestamp"].dt.tz_convert(DISPLAY_TZ).dt.date
-            t["hour_et"] = t["timestamp"].dt.tz_convert(DISPLAY_TZ).dt.hour
-
-        if {"symbol", "realized_pnl"}.issubset(t.columns):
-            grp = t.groupby("symbol", dropna=False)
-            by_symbol = pd.DataFrame(
-                {
-                    "trades": grp.size(),
-                    "realized_pnl_sum": grp["realized_pnl"].sum(),
-                    "realized_pnl_avg": grp["realized_pnl"].mean(),
-                    "wins": grp["realized_pnl"].apply(lambda s: int((s > 0).sum())),
-                    "losses": grp["realized_pnl"].apply(lambda s: int((s < 0).sum())),
-                    "win_rate_%": grp["realized_pnl"].apply(
-                        lambda s: float((s > 0).mean() * 100.0) if len(s) > 0 else 0.0
-                    ),
-                }
-            ).reset_index()
-            if "fees_estimate" in t.columns:
-                by_symbol = by_symbol.merge(
-                    grp["fees_estimate"].sum().reset_index(name="fees_sum"), on="symbol", how="left"
-                )
-            st.markdown('<div class="section-title">Trade Quality By Symbol</div>', unsafe_allow_html=True)
-            st.dataframe(by_symbol.sort_values("realized_pnl_sum", ascending=False), use_container_width=True, hide_index=True)
-
-        # 3) Time-of-day / day-level performance
-        if {"hour_et", "realized_pnl"}.issubset(t.columns):
-            by_hour = (
-                t.groupby("hour_et", dropna=False)["realized_pnl"]
-                .agg(["count", "sum", "mean"])
-                .reset_index()
-                .rename(columns={"count": "trades", "sum": "realized_pnl_sum", "mean": "realized_pnl_avg"})
+    with right:
+        c1, c2 = st.columns([3, 2])
+        query = c1.text_input("Filter headlines", placeholder="e.g. XRP, ETF, hack")
+        only_ours = c2.toggle("Only coins the bot trades", value=False)
+        st.caption(f"{len(items)} headlines from Cointelegraph, CoinDesk, Decrypt, The Block · refreshed every 5 min")
+        shown = 0
+        for x in sorted(items, key=lambda i: i["published"], reverse=True):
+            coins = coins_mentioned(x["title"])
+            if only_ours and not coins:
+                continue
+            if query and query.lower() not in (x["title"] + " " + x.get("summary", "")).lower():
+                continue
+            s = headline_sentiment(x["title"])
+            mood_tag = (f'<span class="tag up">▲ positive</span>' if s > 0 else
+                        f'<span class="tag down">▼ negative</span>' if s < 0 else "")
+            coin_tags = "".join(f'<span class="tag">{c}</span>' for c in coins)
+            title = x["title"].replace("<", "&lt;")
+            st.markdown(
+                f'<div class="news"><a href="{x["link"]}" target="_blank">{title}</a>'
+                f'<div class="meta">{x["source"]} · {et(x["published"])} &nbsp;{mood_tag}{coin_tags}</div></div>',
+                unsafe_allow_html=True,
             )
-            st.markdown('<div class="section-title">Performance By Hour (ET)</div>', unsafe_allow_html=True)
-            st.dataframe(by_hour.sort_values("hour_et"), use_container_width=True, hide_index=True)
+            shown += 1
+            if shown >= 40:
+                break
+        if shown == 0:
+            st.caption("No headlines match.")
 
-        if {"trade_date_et", "realized_pnl"}.issubset(t.columns):
-            by_day = (
-                t.groupby("trade_date_et", dropna=False)["realized_pnl"]
-                .agg(["count", "sum", "mean"])
-                .reset_index()
-                .rename(columns={"count": "trades", "sum": "realized_pnl_sum", "mean": "realized_pnl_avg"})
-            )
-            st.markdown('<div class="section-title">Performance By Day (ET)</div>', unsafe_allow_html=True)
-            st.dataframe(by_day.sort_values("trade_date_et", ascending=False), use_container_width=True, hide_index=True)
 
-    # 4) Equity optimization stats
-    if equity_df is None or equity_df.empty:
-        info("No equity data available for optimization stats.")
+def safety_tab(status: dict) -> None:
+    st.markdown("**Safety systems**")
+    rows = [
+        ("Autopilot", "good" if status["running"] else "warn",
+         "running" if status["running"] else "not running - start with install_autopilot.ps1"),
+        ("Emergency stop flag", "crit" if status["emergency_flag"] else "good",
+         "SET - bot will not trade" if status["emergency_flag"] else "not set"),
+        ("Drawdown safety stop", "crit" if status["safety_stop"] else "good",
+         "TRIGGERED - review logs" if status["safety_stop"] else "not triggered (stops at -12% day / -30% total)"),
+    ]
+    for name, lvl, text in rows:
+        st.markdown(f'{status_badge(lvl, name)} <span class="note">&nbsp;{text}</span>', unsafe_allow_html=True)
+
+    st.markdown("**Anti-rug-pull checks on meme coins** (history · live order book · on-chain contract)")
+    ar = read_csv(LOGS / "anti_rug_log.csv")
+    if ar.empty:
+        st.caption("No anti-rug checks logged yet.")
     else:
-        eq_col = "total_equity" if "total_equity" in equity_df.columns else next(
-            (c for c in equity_df.columns if "equity" in c.lower()), None
-        )
-        ts_col = "timestamp" if "timestamp" in equity_df.columns else next(
-            (c for c in equity_df.columns if "time" in c.lower() or "date" in c.lower()), None
-        )
-        if eq_col is not None and ts_col is not None:
-            e = equity_df.copy()
-            e[ts_col] = pd.to_datetime(e[ts_col], errors="coerce", utc=True)
-            e[eq_col] = pd.to_numeric(e[eq_col], errors="coerce")
-            e = e.dropna(subset=[ts_col, eq_col]).sort_values(ts_col)
-            if not e.empty:
-                e["ret"] = e[eq_col].pct_change().fillna(0.0)
-                e["dd_pct"] = drawdown_pct(e[eq_col])
-                stats = pd.DataFrame(
-                    [
-                        {"metric": "equity_points", "value": int(len(e))},
-                        {"metric": "start_equity", "value": float(e[eq_col].iloc[0])},
-                        {"metric": "end_equity", "value": float(e[eq_col].iloc[-1])},
-                        {"metric": "total_return_%", "value": float((e[eq_col].iloc[-1] / e[eq_col].iloc[0] - 1.0) * 100.0) if e[eq_col].iloc[0] != 0 else 0.0},
-                        {"metric": "max_drawdown_%", "value": float(e["dd_pct"].min())},
-                        {"metric": "avg_period_return_%", "value": float(e["ret"].mean() * 100.0)},
-                        {"metric": "return_std_%", "value": float(e["ret"].std(ddof=0) * 100.0)},
-                    ]
-                )
-                st.markdown('<div class="section-title">Equity Statistics</div>', unsafe_allow_html=True)
-                st.dataframe(stats, use_container_width=True, hide_index=True)
+        ar = ar.sort_values("timestamp", ascending=False).copy()
+        ar["timestamp"] = ar["timestamp"].dt.tz_convert(TZ).dt.strftime("%Y-%m-%d %H:%M")
+        st.dataframe(ar.head(100), width="stretch", hide_index=True)
 
-    # 5) Runner stop reasons (critical for optimization/debug)
-    run_log_path = LOG_DIR / "live_runner_runs.csv"
-    if run_log_path.exists():
-        try:
-            rr = pd.read_csv(run_log_path)
-            if not rr.empty:
-                if "timestamp" in rr.columns:
-                    rr["timestamp"] = pd.to_datetime(rr["timestamp"], errors="coerce", utc=True)
-                    rr["timestamp_et"] = rr["timestamp"].dt.tz_convert(DISPLAY_TZ).dt.strftime("%Y-%m-%d %H:%M:%S")
-                if "stop_reason" in rr.columns:
-                    reason_counts = (
-                        rr["stop_reason"]
-                        .fillna("")
-                        .replace("", "NO_STOP_REASON")
-                        .value_counts(dropna=False)
-                        .reset_index()
-                    )
-                    reason_counts.columns = ["stop_reason", "count"]
-                    st.markdown('<div class="section-title">Runner Stop Reason Counts</div>', unsafe_allow_html=True)
-                    st.dataframe(reason_counts, use_container_width=True, hide_index=True)
-                st.markdown('<div class="section-title">Recent Runner Runs</div>', unsafe_allow_html=True)
-                show_cols = [c for c in ["run_number", "timestamp_et", "equity", "drawdown", "trades_executed", "fatal_stop", "stop_reason"] if c in rr.columns]
-                if show_cols:
-                    st.dataframe(rr.sort_values("run_number", ascending=False)[show_cols].head(50), use_container_width=True, hide_index=True)
-        except Exception as exc:
-            info(f"Could not read runner run log for optimization panel: {exc}")
+    st.markdown("**Risk limits**")
+    st.dataframe(pd.DataFrame([
+        ("V7 max order", "12% of equity"), ("V7 max position", "36% of equity"),
+        ("V7 max exposure", "95%"), ("Daily loss stop", "-12%"), ("Total drawdown stop", "-30%"),
+        ("Meme sleeve cap", "3% total / 1.5% per coin"),
+        ("ML risk per trade", "1% of ML account"), ("ML max position", "20% of ML account"),
+        ("ML reward:risk", "2.0"), ("ML entry gate", "expected value ≥ +0.2R and research health OK"),
+    ], columns=["Limit", "Setting"]), width="stretch", hide_index=True)
+
+    log = LOGS / "autopilot.log"
+    if log.exists():
+        with st.expander("Autopilot log (last 60 lines)"):
+            lines = log.read_text(encoding="utf-8", errors="ignore").splitlines()[-60:]
+            st.code("\n".join(lines), language=None)
+
+
+# --------------------------------------------------------------------------- #
+# Page                                                                        #
+# --------------------------------------------------------------------------- #
+inject_css()
+status = bot_status()
+header(status)
+run_control_bar()
+ticker_strip()
+
+held = [p.split("/")[0] for p in (read_json(ML_LOGS / "state.json").get("positions") or {})]
+snap = read_csv(LOGS / "positions_snapshot.csv")
+if not snap.empty:
+    held += [s.split("/")[0] for s in snap["symbol"].astype(str)]
+prices = live_price_map(WATCHLIST + held)
+
+tabs = st.tabs(["Overview", "Live Prices", "V7 Portfolio", "ML Sleeve", "Trend (paper)", "News", "Safety"])
+with tabs[0]:
+    overview_tab(prices)
+with tabs[1]:
+    prices_tab()
+with tabs[2]:
+    v7_tab(prices)
+with tabs[3]:
+    ml_tab(prices)
+with tabs[4]:
+    trend_tab(prices)
+with tabs[5]:
+    news_tab()
+with tabs[6]:
+    safety_tab(status)

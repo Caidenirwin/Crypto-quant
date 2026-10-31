@@ -9,8 +9,9 @@ Each run:
   3. Promote a challenger ONLY if it beats the champion on all three tests:
        avg R per signal (+0.05R margin), portfolio Sharpe 2021+, and the last 180 days.
   4. Retrain the champion on all labelled history -> models/ml_bracket_model.joblib.
-  5. Health gate: if the champion's last-180-day out-of-sample trades average < 0R
-     (with >= 40 trades), NEW ML entries are paused until a later run sees the edge back.
+  5. Health gate: NEW ML entries are allowed only if the champion has >= 40 out-of-sample
+     trades in the last 180 days (counted back from today) AND they average >= 0R.
+     Too few recent trades counts as paused - no evidence is not a reason to trade.
   6. Write a report to outputs/research_reports/<date>.md.
 
 Headline sentiment: archived daily by news_feed.py. Once 180+ days exist, the
@@ -53,6 +54,11 @@ def _read(path: Path, default):
         return default
 
 
+def recent_window_start() -> pd.Timestamp:
+    """Start of the health-gate window: RECENT_DAYS before today (UTC, tz-naive like the dataset)."""
+    return pd.Timestamp.now(tz="UTC").tz_localize(None).normalize() - pd.Timedelta(days=RECENT_DAYS)
+
+
 def evaluate_variant(name: str, panel: dict, ds: pd.DataFrame, cfg: Config) -> dict:
     from ml_research import simulate, trade_stats
 
@@ -62,7 +68,9 @@ def evaluate_variant(name: str, panel: dict, ds: pd.DataFrame, cfg: Config) -> d
     oos["ev"] = expected_r(oos["p"].to_numpy(), cfg.ml.reward_risk)
     sig = oos[oos["ev"] >= cfg.ml.min_expected_r]
     lab = sig[sig["label"].notna()]
-    recent_cut = lab["date"].max() - pd.Timedelta(days=RECENT_DAYS)
+    # Health window counts back from TODAY. (It used to count back from the last signal,
+    # so a model that stopped signalling kept being judged on trades 9-15 months old.)
+    recent_cut = recent_window_start()
     port = simulate(sig, p, cfg, "2021-01-01")
     return {
         "variant": name,
@@ -119,7 +127,13 @@ def run(force: bool = False) -> dict:
     train_final_model(results[champion]["_dataset"], cfg, variant=champion)
 
     rec = results[champion]["recent_180d"]
-    healthy = rec.get("trades", 0) < HEALTH_MIN_TRADES or rec.get("avg_r", 0.0) >= 0.0
+    # Entries need POSITIVE EVIDENCE: enough recent out-of-sample trades AND a non-negative
+    # average. Too few recent trades (e.g. a model that stopped signalling) means paused.
+    enough = rec.get("trades", 0) >= HEALTH_MIN_TRADES
+    healthy = enough and rec.get("avg_r", -1.0) >= 0.0
+    verdict = ("" if healthy else
+               f" - paused: needs >= {HEALTH_MIN_TRADES} recent trades" if not enough else
+               " - paused: recent average below 0R")
     now = datetime.now(timezone.utc).isoformat()
     status = {
         "last_research": now,
@@ -127,7 +141,8 @@ def run(force: bool = False) -> dict:
         "promoted_this_run": promoted,
         "entries_allowed": bool(healthy),
         "health_reason": (
-            f"last {RECENT_DAYS}d: {rec.get('trades', 0)} OOS trades, avg {rec.get('avg_r', float('nan')):+.3f}R"
+            f"last {RECENT_DAYS}d (since {recent_window_start().date()}): {rec.get('trades', 0)} OOS trades, "
+            f"avg {(format(rec['avg_r'], '+.3f') + 'R') if rec.get('trades') else 'n/a'}{verdict}"
         ),
         "news_archive_days": archive_days(),
         "fear_greed_latest": float(fng["fng"].iloc[-1]) if not fng.empty else None,

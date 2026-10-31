@@ -12,6 +12,7 @@ This runner:
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import csv
 import logging
 import os
@@ -63,7 +64,8 @@ class LiveSafetyConfig:
     # V7 backtest max DD is -20%; stop at 30% gives 1.5x breathing room for live volatility.
     stop_total_drawdown_pct: float = 0.30
     starting_capital_usd: float = 500.0
-    tax_reserve_rate: float = 0.30
+    # Share of each winning trade's profit locked in the tax reserve (rest is reinvested).
+    tax_reserve_rate: float = Config().portfolio.tax_reserve_rate
     profit_to_core_hold_fraction: float = 0.0  # No forced core holds — let strategy decide
     core_hold_symbols: Tuple[str, ...] = ()
 
@@ -603,7 +605,7 @@ def apply_anti_rug_guard(
         return set()
 
     guard = AntiRugGuard(cfg, cache_path=logs_dir / "anti_rug_cache.json")
-    equity = paper.total_equity(latest_prices)
+    equity = paper.trading_equity(latest_prices)
     log_path = logs_dir / "anti_rug_log.csv"
     headers = ["timestamp", "symbol", "held", "target_weight", "allow_entry", "force_exit", "reasons"]
     rug_exits: set = set()
@@ -885,7 +887,8 @@ def run_once(cfg: Config, safety: LiveSafetyConfig) -> RunSummary:
         px = float(latest_prices.get(sym, 0.0))
         if px <= 0:
             continue
-        equity_now = paper.total_equity(latest_prices)
+        # Size from TRADING equity: the tax reserve is locked money, never reinvested.
+        equity_now = paper.trading_equity(latest_prices)
         target_value = float(tgt_w) * equity_now
         current_value = paper.position_value(sym, px)
         delta = target_value - current_value
@@ -925,7 +928,7 @@ def run_once(cfg: Config, safety: LiveSafetyConfig) -> RunSummary:
         if px <= 0 or pos.quantity <= 0:
             continue
         current_value = pos.quantity * px
-        dyn_order_cap_exit = safety.order_limit(paper.total_equity(latest_prices))
+        dyn_order_cap_exit = safety.order_limit(paper.trading_equity(latest_prices))
         # Rug in progress: dump the whole position now, not one capped slice per run.
         order_value = current_value if sym in rug_exit_symbols else min(current_value, dyn_order_cap_exit)
         min_notional = _market_min_notional(exchange, sym)
@@ -962,7 +965,7 @@ def run_once(cfg: Config, safety: LiveSafetyConfig) -> RunSummary:
         except Exception:
             print(f"safety checks failed for {sym}: invalid symbol format")
             continue
-        live_equity = paper.total_equity(latest_prices)
+        live_equity = paper.trading_equity(latest_prices)
         dyn_order_limit = safety.order_limit(live_equity)
         dyn_pos_limit = safety.position_limit(live_equity)
         is_rug_exit = side == "sell" and sym in rug_exit_symbols
@@ -983,7 +986,8 @@ def run_once(cfg: Config, safety: LiveSafetyConfig) -> RunSummary:
             projected_position_value -= order_value
             new_pos_value = max(0.0, cur_pos_value - order_value)
 
-        projected_equity = projected_cash + projected_position_value + paper.tax_manager.total_tax_reserve
+        # Exposure / cash-buffer limits apply to tradable money only (reserve excluded).
+        projected_equity = projected_cash + projected_position_value
         if projected_equity <= 0:
             print(f"safety checks failed for {sym}: projected equity invalid")
             continue
@@ -1136,6 +1140,39 @@ def run_once(cfg: Config, safety: LiveSafetyConfig) -> RunSummary:
     )
 
 
+@contextmanager
+def cycle_lock(logs_dir: Path, wait_seconds: float = 300.0, stale_seconds: float = 1200.0):
+    """
+    Only one trading cycle at a time (autopilot vs. a manual `run_bot_now.ps1`), so two
+    processes never update the same paper ledger at once. A lock older than
+    stale_seconds is assumed left behind by a crash and is cleared.
+    """
+    path = logs_dir / "cycle.lock"
+    started = time.time()
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{os.getpid()} {current_utc_ts()}".encode())
+            os.close(fd)
+            break
+        except FileExistsError:
+            try:
+                age = time.time() - path.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if age > stale_seconds:
+                path.unlink(missing_ok=True)
+                continue
+            if time.time() - started > wait_seconds:
+                raise RuntimeError("another trading cycle is still running (logs/cycle.lock)")
+            print("Another trading cycle is running - waiting for it to finish...")
+            time.sleep(5)
+    try:
+        yield
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def _run_side_sleeves(cfg: Config) -> None:
     """News refresh + ML paper sleeve. Isolated: any failure here never affects V7."""
     news = None
@@ -1207,10 +1244,11 @@ def main() -> None:
     emergency_stop_flag = logs_dir / "emergency_stop.flag"
 
     if not args.loop:
-        summary = run_once(cfg, safety)
-        _print_run_summary(run_number=1, summary=summary, next_run_utc=None)
-        _append_run_log(logs_dir=logs_dir, run_number=1, summary=summary, next_run_utc=None)
-        _run_side_sleeves(cfg)
+        with cycle_lock(logs_dir):
+            summary = run_once(cfg, safety)
+            _print_run_summary(run_number=1, summary=summary, next_run_utc=None)
+            _append_run_log(logs_dir=logs_dir, run_number=1, summary=summary, next_run_utc=None)
+            _run_side_sleeves(cfg)
         if summary.fatal_stop:
             sys.exit(EXIT_SAFETY_STOP)
         return
@@ -1255,7 +1293,8 @@ def main() -> None:
 
             run_number += 1
             try:
-                summary = run_once(cfg, safety)
+                with cycle_lock(logs_dir):
+                    summary = run_once(cfg, safety)
                 consecutive_errors = 0
             except Exception as exc:
                 consecutive_errors += 1
@@ -1293,7 +1332,11 @@ def main() -> None:
                 next_run = loop_start + interval * run_number
             _print_run_summary(run_number=run_number, summary=summary, next_run_utc=next_run)
             _append_run_log(logs_dir=logs_dir, run_number=run_number, summary=summary, next_run_utc=next_run)
-            _run_side_sleeves(cfg)
+            try:
+                with cycle_lock(logs_dir):
+                    _run_side_sleeves(cfg)
+            except RuntimeError as exc:
+                print(f"side sleeves skipped this cycle: {exc}")
 
             if summary.fatal_stop:
                 print("Fatal safety condition triggered. loop stopped.")

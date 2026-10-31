@@ -276,6 +276,10 @@ class PortfolioConfig:
     take_profit_cooldown_days: int = 1
     trend_break_exit_ma_window: int = 20
     trend_break_exit_fraction: float = 0.50
+    # Profit split (live V7 + ML paper accounts): on every winning sale this share of the
+    # realized profit is moved into a tax reserve that is never traded; the rest stays in
+    # cash and is reinvested to build capital. 0.50 = half reserved, half reinvested.
+    tax_reserve_rate: float = 0.50
 
 
 @dataclass

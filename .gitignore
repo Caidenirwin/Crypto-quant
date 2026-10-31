@@ -37,3 +37,11 @@ node_modules/
 screenshots/*
 !screenshots/.gitkeep
 
+
+# Local-only: agent settings, caches, bulk downloaded data
+.claude/
+.streamlit/secrets.toml
+audit_ml/cache/
+*.pkl
+universe_data/
+

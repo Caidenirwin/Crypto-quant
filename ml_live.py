@@ -59,6 +59,14 @@ def save_state(state: dict) -> None:
 
 def _append(path: Path, row: dict) -> None:
     ML_LOGS.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        with path.open(encoding="utf-8") as f:
+            header = f.readline().strip().split(",")
+        if header != list(row):
+            # Columns changed (e.g. tax_reserve added): migrate the file instead of misaligning rows.
+            old = pd.read_csv(path)
+            old.reindex(columns=list(dict.fromkeys(list(row) + list(old.columns)))).to_csv(path, index=False)
+            row = {**{c: "" for c in pd.read_csv(path, nrows=0).columns}, **row}
     new = not path.exists()
     with path.open("a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(row))
@@ -133,14 +141,22 @@ def _close(ex, state: dict, sym: str, reason: str, ref_px: float) -> Optional[di
     r_mult = (px - float(pos["entry"])) / float(pos["risk"])
     state["cash"] += proceeds
     state["realized_pnl"] = float(state.get("realized_pnl", 0.0)) + pnl
+    # Profit split: lock part of every winning trade in the tax reserve; the rest stays in cash.
+    tax = max(0.0, pnl) * float(Config().portfolio.tax_reserve_rate)
+    if tax > 0:
+        state["cash"] -= tax
+        state["tax_reserve"] = float(state.get("tax_reserve", 0.0)) + tax
     remaining = float(pos["qty"]) - qty
     if remaining * px < 1.0:
         del state["positions"][sym]
     else:
         pos["qty"] = remaining
+    # Persist the exit immediately: otherwise a crash would leave the sold position in the
+    # state file and the next cycle would sell it again (from the testnet balance V7 shares).
+    save_state(state)
     row = {"timestamp": _now().isoformat(), "symbol": sym, "side": "sell", "qty": qty, "price": px,
            "notional": qty * px, "reason": reason, "r_multiple": round(r_mult, 3), "pnl": round(pnl, 4),
-           "cash_after": round(state["cash"], 4)}
+           "tax_reserved": round(tax, 4), "cash_after": round(state["cash"], 4)}
     _append(TRADES_PATH, row)
     print(f"[ml] EXIT {sym} {reason}: {qty:.6g} @ {px:.6g}  R={r_mult:+.2f}  pnl=${pnl:+.2f}")
     return row
@@ -216,6 +232,9 @@ def generate_entries(ex, state: dict, cfg: Config, news: Optional[dict]) -> int:
         print(f"[ml] daily data stale (latest {latest.date()}) - no entries")
         return 0
     state["last_signal_date"] = str(latest.date())
+    # Claim this daily candle on disk BEFORE any order: if the process dies mid-loop the
+    # next cycle skips the day (a missed entry) instead of re-buying the same signal.
+    save_state(state)
 
     # Each coin's own newest candle: Yahoo coins publish ~1 day after Binance ones, so
     # requiring date == latest would silently drop most of the universe.
@@ -228,7 +247,7 @@ def generate_entries(ex, state: dict, cfg: Config, news: Optional[dict]) -> int:
     allowed = bool(status.get("entries_allowed", False))
     coin_risk = (news or {}).get("coin_risk", {})
     guard = AntiRugGuard(cfg)
-    equity = portfolio_equity(state)
+    equity = trading_equity(state)          # size from tradable money; reserve is never reinvested
     slots = mc.max_open_trades - len(state["positions"])
     opened = 0
     for _, row in today.iterrows():
@@ -293,15 +312,24 @@ def _open(ex, state: dict, cfg: Config, sym: str, atr: float, equity: float, p: 
         "entry_time": now.isoformat(), "last_check": now.isoformat(),
         "expiry": (now + timedelta(days=mc.horizon_days)).isoformat(), "p": p,
     }
+    # Persist the fill immediately: a crash after this point must not lose the position
+    # (unmanaged stop/target) or let the next cycle buy it again.
+    save_state(state)
     _append(TRADES_PATH, {"timestamp": now.isoformat(), "symbol": sym, "side": "buy", "qty": f["filled_qty"],
                           "price": fill, "notional": f["filled_qty"] * fill, "reason": f"ML p={p:.2f}",
-                          "r_multiple": "", "pnl": "", "cash_after": round(state["cash"], 4)})
+                          "r_multiple": "", "pnl": "", "tax_reserved": "", "cash_after": round(state["cash"], 4)})
     print(f"[ml] BUY {sym}: {f['filled_qty']:.6g} @ {fill:.6g}  stop {fill - risk:.6g}  "
           f"target {fill + mc.reward_risk * risk:.6g}  (R:R {mc.reward_risk:.1f})")
     return True
 
 
 def portfolio_equity(state: dict, prices: Optional[Dict[str, float]] = None) -> float:
+    """Everything the ML account owns, including the locked tax reserve."""
+    return trading_equity(state, prices) + float(state.get("tax_reserve", 0.0))
+
+
+def trading_equity(state: dict, prices: Optional[Dict[str, float]] = None) -> float:
+    """Cash + open trades - what trade sizing may use (tax reserve excluded)."""
     total = float(state["cash"])
     for sym, pos in state["positions"].items():
         try:
@@ -325,7 +353,8 @@ def run_ml_cycle(cfg: Optional[Config] = None, news: Optional[dict] = None) -> d
     equity = portfolio_equity(state)
     status = json.loads(STATUS_PATH.read_text(encoding="utf-8")) if STATUS_PATH.exists() else {}
     _append(EQUITY_PATH, {"timestamp": _now().isoformat(), "cash": round(state["cash"], 4),
-                          "equity": round(equity, 4), "open_trades": len(state["positions"]),
+                          "equity": round(equity, 4), "tax_reserve": round(float(state.get("tax_reserve", 0.0)), 4),
+                          "open_trades": len(state["positions"]),
                           "realized_pnl": round(float(state.get("realized_pnl", 0.0)), 4),
                           "entries_allowed": status.get("entries_allowed")})
     summary = {"enabled": True, "equity": equity, "open": len(state["positions"]),

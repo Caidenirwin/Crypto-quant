@@ -83,6 +83,10 @@ class PaperAccount:
             pnl += float(pos.quantity) * (px - float(pos.avg_entry_price))
         return pnl
 
+    def trading_equity(self, price_map: Dict[str, float]) -> float:
+        """Money the strategy may use: cash + positions, EXCLUDING the locked tax reserve."""
+        return float(self.cash_usd) + self.open_position_value(price_map)
+
     def total_equity(self, price_map: Dict[str, float]) -> float:
         return float(self.cash_usd) + self.open_position_value(price_map) + float(
             self.tax_manager.total_tax_reserve

@@ -1,0 +1,8 @@
+model,oos_auc,gated_trades,gated_avg_r,gated_win_rate,note
+CHAMPION (real labels),0.5855,2053,0.052,0.3863,
+shuffled labels (seed 1),0.4629,204,0.2428,0.4951,
+shuffled labels (seed 2),0.483,323,0.467,0.5759,
+shuffled labels (seed 3),0.5079,123,-0.1042,0.3577,
+"random entries (2000 draws, same n)",0.5,2053,-0.0125,0.3862,"champion avgR beats 99.0% of random draws; 95% band [-0.063, +0.039]"
+trend filter (no model),0.5471,9693,0.0375,0.3818,
+"champion t-stat vs 0 (naive, trades overlap)",,2053,0.052,,t = 1.72
