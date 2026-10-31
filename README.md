@@ -88,13 +88,13 @@ Crypto-quant/
 ├── news_feed.py             # Fear & Greed index + news headlines
 ├── indicators.py, data.py, portfolio.py, risk.py, robustness.py, tax_reserve.py, utils.py
 ├── config.py                # All configuration knobs (dataclasses)
-├── dashboard.py             # Streamlit entry -> dashboard_app.py (legacy: dashboard_app_legacy.py)
+├── dashboard.py             # Streamlit entry -> dashboard_app.py
 ├── strategies/              # Strategy sleeves (rsi_dip, sector_rotation, volatility, momentum, ...)
 ├── execution/               # binance_executor.py: Binance Spot Testnet executor (sandbox enforced)
 ├── audit_ml/                # 14 audit scripts (a01–a12), REPORT.md, results/
 ├── outputs/                 # Research outputs (honest baseline, simple baselines, ML walk-forward)
 ├── models/                  # Saved ML champion model + status/health file
-├── reference_data/          # BTC, ETH and Fear & Greed reference CSVs
+├── reference_data/          # BTC(USD).csv, ETH(USD).csv, fear_greed.csv, and the original BTC sheet export
 ├── data/example_prices.csv  # Public-safe sample dataset
 ├── docs/STRATEGY.md         # Strategy spec
 ├── scripts/test_execution.py
@@ -194,7 +194,7 @@ pytest tests/
 
 ## Security
 
-The `.env` file, logs, private outputs, caches, `.claude/` and `.streamlit/secrets.toml` are all gitignored. Only the `.env.example` template is committed.
+The `.env` file, logs, paper-trading ledgers, private outputs, caches, `.claude/`, and any `secrets.toml` are gitignored. Only the `.env.example` template is committed.
 
 ## Disclaimer
 
