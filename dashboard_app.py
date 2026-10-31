@@ -483,8 +483,8 @@ def overview_tab(prices: Dict[str, float]) -> None:
     profit_split_section()
 
     with st.expander("▶ Run the bot now (one trading cycle, any time)"):
-        st.markdown("Paste into **PowerShell**. Safe while the autopilot runs: it waits for any cycle in progress.")
-        st.code("cd C:\\Users\\caide\\Downloads\\CRPTO-QUANT\n.\\run_bot_now.ps1", language="powershell")
+        st.markdown("From the repository root in **PowerShell**. Safe while the autopilot runs: it waits for any cycle in progress.")
+        st.code(".\\run_bot_now.ps1", language="powershell")
         st.markdown('<p class="note">Add <code>-SkipData</code> to skip the ~1 minute data refresh. '
                     'Stop everything: <code>.\\stop_autopilot.ps1</code> · restart: '
                     '<code>.\\install_autopilot.ps1</code></p>', unsafe_allow_html=True)

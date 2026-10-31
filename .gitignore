@@ -20,6 +20,20 @@ forward_*.jsonl
 data_coverage_report.csv
 asset_inclusion_diagnostics.csv
 
+# Paper-account ledgers and runner state. The runners write these under logs/
+# (ignored above); ignore the same names at the repo root so a local copy
+# of balances or fills cannot be committed.
+live_trades.csv
+paper_equity.csv
+tax_reserve.csv
+positions_snapshot.csv
+live_runner_runs.csv
+anti_rug_log.csv
+anti_rug_cache.json
+ml_trades.csv
+ml_equity.csv
+ml_signals.csv
+
 # Private datasets and outputs
 data/private/
 historic_data/*.csv
@@ -40,6 +54,7 @@ screenshots/*
 
 # Local-only: agent settings, caches, bulk downloaded data
 .claude/
+secrets.toml
 .streamlit/secrets.toml
 audit_ml/cache/
 *.pkl
